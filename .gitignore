@@ -38,7 +38,7 @@ tmp/
 temp/
 *.tmp
 *.log
-test
+tests
 
 # Coverage
 *.gcda
