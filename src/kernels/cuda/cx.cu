@@ -373,13 +373,15 @@ mm_status kx_op_gemm_f4(const mm_kcall *kc)
 
 /* Partial in-place RoPE over the first rope_dim dims of every q and k
  * row. One thread per (token, head, pair): element i is paired with
- * i + rd/2 at angle pos * theta^(-2i/rd), the reference's formulas
- * (host powf/sinf/cosf vs device libm differ by <= 2 f32 ulp; the parity
- * gate is 1 bf16 ulp). Rows: q = [M][q_heads][hd], k = [M][kv_heads][hd]. */
+ * i + rd/2 at angle pos * rope_inv[i] — the effective table (plain
+ * RoPE or the YaRN NTK-by-parts blend) arrives in the control buffer,
+ * so CPU and CUDA consume bit-identical frequencies; the rotated
+ * components carry the attention scale rope_mscale (plain 1.0). Host
+ * vs device libm sinf/cosf differ by <= 2 f32 ulp; the parity gate is
+ * 1 bf16 ulp. Rows: q = [M][q_heads][hd], k = [M][kv_heads][hd]. */
 __global__ void k_rope(const mm_ctrl *c, uint16_t *q, uint16_t *k,
                        uint32_t M, uint32_t rd, uint32_t hd, uint32_t qdim,
-                       uint32_t kvdim, uint32_t qh, uint32_t kh,
-                       float inv_theta)
+                       uint32_t kvdim, uint32_t qh, uint32_t kh)
 {
     uint32_t i = blockIdx.x, h = blockIdx.y, m = blockIdx.z;
     if (m >= M)
@@ -390,13 +392,13 @@ __global__ void k_rope(const mm_ctrl *c, uint16_t *q, uint16_t *k,
     else
         row = k + (size_t)m * kvdim + (size_t)(h - qh) * hd;
     uint32_t pos = c->n_slots ? c->slot_pos[m] : c->pos0 + m;
-    float inv_freq = powf(inv_theta, 2.0f * (float)i / (float)rd);
-    float ang = (float)pos * inv_freq;
+    float ang = (float)pos * c->rope_inv[i];
     float s = sinf(ang), co = cosf(ang);
     float x0 = b16_rd(&row[i]);
     float x1 = b16_rd(&row[i + rd / 2]);
-    b16_wr(&row[i], x0 * co - x1 * s);
-    b16_wr(&row[i + rd / 2], x1 * co + x0 * s);
+    float ms = c->rope_mscale;
+    b16_wr(&row[i], (x0 * co - x1 * s) * ms);
+    b16_wr(&row[i + rd / 2], (x1 * co + x0 * s) * ms);
 }
 
 mm_status kx_op_rope(const mm_kcall *kc)
@@ -415,8 +417,7 @@ mm_status kx_op_rope(const mm_kcall *kc)
                                         (uint16_t *)(uintptr_t)op->a,
                                         (uint16_t *)(uintptr_t)op->b,
                                         M, rd, hd, qdim, kvdim,
-                                        mc->q_heads, mc->kv_heads,
-                                        1.0f / mc->rope_theta);
+                                        mc->q_heads, mc->kv_heads);
     return kx_sync();
 }
 

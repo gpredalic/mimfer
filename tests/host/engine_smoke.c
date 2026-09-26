@@ -45,7 +45,7 @@ static mm_status run_case(uint32_t max_ctx, uint32_t max_out, uint64_t seed,
     uint32_t n = 0, rounds = 0;
     mm_status s;
 
-    memset(&cfg, 0, sizeof cfg);
+    mm_engine_cfg_default(&cfg);   /* canonical defaults, then overrides */
     cfg.max_ctx = max_ctx;
     cfg.kv_capacity = 0;               /* auto: one sequence, 64-aligned     */
     cfg.kv_dtype = MM_KV_BF16;

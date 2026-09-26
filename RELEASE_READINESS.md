@@ -35,6 +35,11 @@
 | Device arenas + pinned I/O | `src/alloc/alloc.c`, `src/cuda/cuda_mem.c` | WRITTEN | host paths exercised; device paths unexecuted |
 | CUDA kernels (parity-first mirrors of the CPU reference) | `src/kernels/cuda/cx.cu` | WRITTEN | syntax-checked only; **never compiled with nvcc** |
 | Parity tooling (golden writer + dual-mode parity test + host self-check) | `tests/host/par_golden.c`, `tests/cuda/parity_test.c` | COMPLETE (host side) | self-check `PARITY PASSED`, bit-exact against golden |
+| RoPE frequency tables (plain + YaRN NTK-by-parts) | `src/rope/rope.c`, `include/mimfer/rope.h` | COMPLETE (host) | `rope_test` (plain bit-exact vs legacy formula; YaRN vs transformers v4.45.0 reference formula); consumed by CPU+CUDA RoPE kernels via the round control buffer; plain path leaves the golden bit-identical |
+| CLI flag surface (one grammar table + cross-field validation) | `src/flags/flags.c`, `include/mimfer/flags.h` | COMPLETE (host) | `flags_test`: every flag parsed/range-checked, malformed input rejected with explicit errors, `--help` lists all flags; YaRN factor + `--spec`/`--draft-tokens`/`--lm-head-draft` cross-field rules via `mm_engine_cfg_validate` |
+| Weights profiles (quasar / neroued context defaults + artifact metadata) | `src/config/config.c` (`MM_PROFILES`) | COMPLETE (host) | profile lookup + "explicit flags win" defaulting covered by `flags_test`/`engine_features_test`; the profiles are metadata (max ctx, chunk, DFlash2 window ceiling, MTP layers) — the artifact loader itself is still unintegrated (§3) |
+| Engine feature gates (spec backend + vision hook) | `src/engine/engine.c` | COMPLETE (host) | `engine_features_test`: `--spec mtp/dflash2` refused at start with `MM_ERR_UNSUPPORTED` + explicit log; vision hook validates then refuses image submission; declared scope in `docs/dflash2.md` |
+| Feature test harness (engine-level, host) | `tests/host/engine_features_test.c` | COMPLETE | one prefill round: YaRN table demonstrably changes the rotated q buffer vs plain (the table reaches the kernels); plain runs byte-identical (golden path unchanged) |
 | End-to-end GPU smoke test | `tests/cuda/gpu_smoke.c` | WRITTEN | written + syntax-checked; pending GPU execution |
 | Device profile + gate (RTX PRO 4000 target, soft-gate env var) | `src/config/config.c`, `src/engine/engine.c` | WRITTEN | host-verified (gate code path only reached in CUDA builds) |
 
@@ -46,9 +51,9 @@
 | Tokenizer | `src/tokenizer/tokenizer.c` written, **not in any documented build, not called** | same status; header included by `engine.h` only for the struct field. |
 | Telemetry | `src/telemetry/telemetry.c` written, **not in any documented build, not called** | same status. |
 | FP8 KV cache (`MM_KV_FP8`) | declared (`config.h`, marked "phase 2"); pool strides handle it (`kv.c`); kernels write bf16 only | intentional phase-2 scope. |
-| MTP draft knob (`cfg.draft`, `ver[]` plans) | field + plan slots exist; no draft flow in the step loop | declared scope, unimplemented flow. |
+| MTP draft / DFlash2 speculative decoding (`cfg.spec`, `cfg.draft`, `--spec`, `--draft-tokens`, `--lm-head-draft`) | flags parsed + cross-validated; profile metadata carries the draft ceilings; **non-off backends refused at engine start** (`MM_ERR_UNSUPPORTED`); no draft/verify flow in the step loop | declared scope, unimplemented flow — declared scope documented in `docs/dflash2.md` |
 | Blackwell optimizations (FMA/tensor-core paths) | not started | explicitly blocked until hardware validation (parity gate must re-pass after any such change). |
-| `docs/architecture.md`, `docs/design.md` | **do not exist** | referenced from comments in `config.h`, `cuda_rt.h`, `tensor.h`; the documented design lives in `READ_MEMORY.md` instead. |
+| `docs/architecture.md`, `docs/design.md` | **do not exist** | referenced from comments in `config.h`, `cuda_rt.h`, `tensor.h`; the documented design lives in `READ_MEMORY.md` instead. (`docs/dflash2.md` — the speculative-decoding declared scope — does exist; created 2026-09-26.) |
 
 ## 4. Known risks
 
@@ -77,11 +82,16 @@
 ## 6. Hardware validation status
 
 **Verified on host (this machine, 2026-09-25/26):**
-`plan_test` PASS · `engine_smoke` PASS (4 cases, byte-identical token
-streams across two runs) · `par_golden` written (3,761,596 B, reproducible
+`plan_test` PASS · `rope_test` PASS (plain bit-exact vs legacy formula;
+YaRN vs reference formula) · `flags_test` PASS (full grammar, cross-field
+rules, explicit errors) · `engine_smoke` PASS (4 cases, byte-identical
+token streams across two runs) · `engine_features_test` PASS (YaRN table
+reaches the kernels; plain byte-identical; spec/vision refusals) ·
+`par_golden` written (3,761,596 B, reproducible
 byte-for-byte on re-run) ·
 `par_selfcheck` PASS (bit-exact, all classes at ulp 0) · ASan+UBSan clean
-(no leaks/overflow/UB) · host regression green under `-Werror`.
+(no leaks/overflow/UB) · host regression green under `-Werror` (now the
+`make test` suite, 6 binaries, strictly sequential).
 
 **Not verified (requires a GPU; exactly what remains):**
 1. `/tmp/par_golden` build+run on the GPU machine (host gcc) → `PAR GOLDEN WRITTEN`
@@ -114,16 +124,22 @@ All commands, expected outputs, and failure interpretation:
 - **Written-but-unintegrated modules:** `artifact.c`, `tokenizer.c`,
   `telemetry.c` (§3) — self-contained, but in no documented build and
   untested.
-- **Declared-but-unimplemented:** `MM_KV_FP8` ("phase 2"), MTP `draft`
-  flow (§3).
+- **Declared-but-unimplemented:** `MM_KV_FP8` ("phase 2"), MTP `draft` /
+  DFlash2 speculative-decoding flow (§3; declared scope in
+  `docs/dflash2.md`, non-off backends refused at engine start).
 - **Missing referenced docs:** `docs/architecture.md`, `docs/design.md`
-  (referenced from three headers; no `docs/` directory).
+  (referenced from three headers; still absent). `docs/dflash2.md` **was**
+  referenced by `flags.h`/`config.h`/`engine.c` and **did not exist** before
+  2026-09-26 — it is now created and is the declared scope of the
+  speculative surface.
 - **Junk files at repo root:** three `tmux-*.log` files, total ≈ 6.4 GB (R6).
 - **Documentation gaps found in the audit:** the documented nvcc commands in
   `READ_MEMORY.md` §4.6 carried no `-arch` flag; `GPU_VALIDATION.md` §6/§7
-  add `-arch=sm_120` (replace per card). No other undocumented build
-  assumptions were found (flags, include paths, and env vars are now fully
-  listed in `GPU_VALIDATION.md` §3).
+  add `-arch=sm_120` (replace per card). The verbatim `gcc`/`nvcc` recipes in
+  `GPU_VALIDATION.md` §5–§7 and `READ_MEMORY.md` §4.6 now include the RoPE
+  module (`src/rope/rope.c`) required by the engine link. No other
+  undocumented build assumptions were found (flags, include paths, and env
+  vars are now fully listed in `GPU_VALIDATION.md` §3).
 
 ## 8. Release gates
 

@@ -240,12 +240,14 @@ mm_status kx_op_rope(const mm_kcall *kc)
     /* a and b are in-place outputs; strip const to write q and k back. */
     uint16_t *q = (uint16_t *)(uintptr_t)op->a;
     uint16_t *k = (uint16_t *)(uintptr_t)op->b;
+    /* Effective inverse-frequency table + attention scale: arrive in the
+     * control buffer (the engine fills them after every round's reset).
+     * The plain table is bit-exact with the legacy per-kernel powf
+     * formula and mscale == 1.0, so the golden reference is unchanged. */
+    const float *inv_freq = c->rope_inv;
+    const float ms = c->rope_mscale;
     if (!q || !k || rd < 2 || rd > hd)
         return MM_ERR_STATE;
-    const float inv_theta = 1.0f / mc->rope_theta;
-    float inv_freq[rd / 2];
-    for (uint32_t i = 0; i < rd / 2; i++)
-        inv_freq[i] = powf(inv_theta, 2.0f * i / (float)rd);
     for (uint32_t m = 0; m < M; m++) {
         const float posf = (float)ctrl_pos(c, m);
         for (uint32_t h = 0; h < mc->q_heads; h++) {
@@ -255,8 +257,8 @@ mm_status kx_op_rope(const mm_kcall *kc)
                 const float s = sinf(ang), co = cosf(ang);
                 const float x0 = bf16_rd(&row[i]);
                 const float x1 = bf16_rd(&row[i + rd / 2]);
-                bf16_wr(&row[i], x0 * co - x1 * s);
-                bf16_wr(&row[i + rd / 2], x1 * co + x0 * s);
+                bf16_wr(&row[i], (x0 * co - x1 * s) * ms);
+                bf16_wr(&row[i + rd / 2], (x1 * co + x0 * s) * ms);
             }
         }
         for (uint32_t h = 0; h < mc->kv_heads; h++) {
@@ -266,8 +268,8 @@ mm_status kx_op_rope(const mm_kcall *kc)
                 const float s = sinf(ang), co = cosf(ang);
                 const float x0 = bf16_rd(&row[i]);
                 const float x1 = bf16_rd(&row[i + rd / 2]);
-                bf16_wr(&row[i], x0 * co - x1 * s);
-                bf16_wr(&row[i + rd / 2], x1 * co + x0 * s);
+                bf16_wr(&row[i], (x0 * co - x1 * s) * ms);
+                bf16_wr(&row[i + rd / 2], (x1 * co + x0 * s) * ms);
             }
         }
     }

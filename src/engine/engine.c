@@ -228,6 +228,7 @@ static mm_status step_prefill(mm_engine *e, int slot)
     e->ctrl.kv_len = plen;
     e->ctrl.n_slots = 0;                 /* prefill: tokens come from toks[] */
     set_sampling(e);
+    mm_rope_fill_ctrl(&e->rope, &e->ctrl);
 
     MM_CHECK(ensure_kv_blocks(e, slot, 0, plen));
 #ifdef MM_WITH_CUDA
@@ -274,6 +275,7 @@ static mm_status step_decode(mm_engine *e, uint32_t n_dec)
     memset(&e->ctrl, 0, sizeof e->ctrl);
     e->ctrl.n_slots = n_dec;             /* decode: tokens come from slot_*[] */
     set_sampling(e);
+    mm_rope_fill_ctrl(&e->rope, &e->ctrl);
 
     for (slot = 0; slot < (int)e->sched.n; slot++) {
         mm_seq *seq = &e->sched.slots[slot];
@@ -394,6 +396,76 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
         free(e);
         return s;
     }
+
+    /* RoPE effective table (plain RoPE, or the YaRN blend when the
+     * config enables it): built once here, then re-copied into the
+     * control buffer after every round's reset (step functions). */
+    s = mm_rope_init(&e->rope, &e->mc, &e->cfg);
+    if (s != MM_OK) {
+#ifdef MM_WITH_CUDA
+        mm_cuda_shutdown();
+#endif
+        free(e);
+        return s;
+    }
+    {
+        char rdesc[96];
+        mm_rope_desc(&e->rope, &e->mc, rdesc, sizeof rdesc);
+        MM_LOGI("engine: rope: %s", rdesc);
+    }
+
+    /* Weights profile: validate the request against the checkpoint's
+     * native ceiling (the artifact's RoPE context, config.c) and pin
+     * the active checkpoint identity for the load log. */
+    if (e->cfg.profile_id != 0) {
+        const mm_profile *p = mm_profile_get(e->cfg.profile_id);
+        if (!p) {
+            MM_LOGE("engine: profile id %u not found", e->cfg.profile_id);
+#ifdef MM_WITH_CUDA
+            mm_cuda_shutdown();
+#endif
+            free(e);
+            return MM_ERR_RANGE;
+        }
+        if (e->cfg.max_ctx > p->max_ctx) {
+            MM_LOGE("engine: profile %s: max_ctx %u exceeds the "
+                    "checkpoint ceiling %u (extend with YaRN, not by "
+                    "raising --max-ctx past it)",
+                    p->name, e->cfg.max_ctx, p->max_ctx);
+#ifdef MM_WITH_CUDA
+            mm_cuda_shutdown();
+#endif
+            free(e);
+            return MM_ERR_RANGE;
+        }
+        e->profile = p;
+        MM_LOGI("engine: profile: %s (%s; %s; mtp_layers=%u "
+                "dflash2_max=%u vision=%d)",
+                p->name, p->repo, p->quant, p->mtp_layers,
+                p->dflash2_max, p->has_vision);
+    }
+
+    /* Speculative decoding: the flag surface is real (parsed, range-
+     * checked, cross-validated against --draft-tokens), but the
+     * draft/verify execution loop is planned work (docs/dflash2.md).
+     * Refuse to start with a speculative backend instead of silently
+     * running non-speculative decode. */
+    if (e->cfg.spec != 0) {
+        const char *backend = e->cfg.spec == 1 ? "mtp" : "dflash2";
+        MM_LOGE("engine: --spec %s is not implemented in this build "
+                "(draft/verify loop: planned work, docs/dflash2.md); "
+                "start with --spec off", backend);
+#ifdef MM_WITH_CUDA
+        mm_cuda_shutdown();
+#endif
+        free(e);
+        return MM_ERR_UNSUPPORTED;
+    }
+
+    if (e->cfg.vision)
+        MM_LOGW("engine: vision hook enabled -- image submission "
+                "returns MM_ERR_UNSUPPORTED until the pipeline lands "
+                "(planned work)");
 
     /* Weight arena: the fake weights + the pools (bump-allocated from it).
      * CUDA build: device arena -- canonical device pointers for the plans,
@@ -576,5 +648,23 @@ const mm_abufs *mm_engine_ab(const mm_engine *e)
 const mm_ctrl *mm_engine_ctrl_dev(const mm_engine *e)
 {
     return e ? &e->ctrl : NULL;
+}
+
+/* Vision hook (planned pipeline): real flag surface, explicit error
+ * until the vision tower lands. The request is validated (non-empty
+ * payload, loaded engine, hook enabled) before the unsupported return,
+ * so callers see the same failure for a disabled hook as for a bad
+ * request -- and neither can silently succeed. */
+mm_status mm_engine_submit_image(mm_engine *e, const void *px, size_t n)
+{
+    MM_REQUIRE(e && px && n > 0, MM_ERR_STATE);
+    MM_REQUIRE(e->loaded, MM_ERR_STATE);
+    if (!e->cfg.vision) {
+        MM_LOGE("engine: vision hook disabled (start with --vision)");
+        return MM_ERR_STATE;
+    }
+    MM_LOGW("engine: vision image submission (n=%zu) is planned work; "
+            "the pipeline is not implemented in this build", n);
+    return MM_ERR_UNSUPPORTED;
 }
 

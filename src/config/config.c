@@ -11,6 +11,7 @@
 #include "mimfer/sampling.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #if defined(MM_WITH_CUDA)
 #include <cuda_runtime.h>
@@ -176,6 +177,63 @@ mm_status mm_model_cfg_finalize(mm_model_cfg *c)
     return MM_OK;
 }
 
+/* ------------------------------------------------ weights profiles */
+/*
+ * The two validated reference checkpoints (README "Supported artifacts").
+ * Same model shape (Qwen3.8-27B, NVFP4); the NInfer artifacts differ in
+ * the quantization metadata, the MTP draft head and the DFlash2 draft
+ * window they carry. max_ctx is the native (unextended) context the
+ * artifact's RoPE was trained for: engine startup hard-fails above it,
+ * which is what makes YaRN (rope.h) the only sanctioned extension path.
+ */
+const mm_profile MM_PROFILES[MM_N_PROFILES] = {
+    [0] = {
+        .id          = 1,
+        .name        = "quasar",
+        .repo        = "MirkoCovizzi/Qwen3.8-27B-QUASAR-NVFP4-NInfer",
+        .quant       = "NVFP4 (NInfer Artifact V2/V3)",
+        .max_ctx     = 262144,
+        .def_ctx     = 32768,
+        .def_chunk   = 2048,
+        .mtp_layers  = 1,
+        .dflash2_max = 8,
+        .has_vision  = 1,
+    },
+    [1] = {
+        .id          = 2,
+        .name        = "neroued",
+        .repo        = "Neroued/Qwen3.8-27B-nvfp4-NInfer",
+        .quant       = "NVFP4 (NInfer Artifact V2/V3)",
+        .max_ctx     = 262144,
+        .def_ctx     = 32768,
+        .def_chunk   = 2048,
+        .mtp_layers  = 1,
+        .dflash2_max = 4,
+        .has_vision  = 1,
+    },
+};
+
+const mm_profile *mm_profile_by_name(const char *name)
+{
+    int i;
+    if (!name)
+        return NULL;
+    for (i = 0; i < MM_N_PROFILES; i++) {
+        if (!strcasecmp(name, MM_PROFILES[i].name))
+            return &MM_PROFILES[i];
+    }
+    return NULL;
+}
+
+const mm_profile *mm_profile_get(uint32_t id)
+{
+    int i;
+    for (i = 0; i < MM_N_PROFILES; i++)
+        if (MM_PROFILES[i].id == id)
+            return &MM_PROFILES[i];
+    return NULL;
+}
+
 /* ------------------------------------------------------ engine config */
 
 void mm_engine_cfg_default(mm_engine_cfg *c)
@@ -194,6 +252,7 @@ void mm_engine_cfg_default(mm_engine_cfg *c)
     c->seed        = 0x4d1bfe57ull;   /* "mimfer" */
     c->verbose     = MM_LOG_WARN;
     c->no_graph    = 0;
+    c->rope_factor = 4.0f;            /* YaRN default scale factor s      */
 }
 
 mm_status mm_engine_cfg_validate(const mm_engine_cfg *c)
@@ -209,5 +268,31 @@ mm_status mm_engine_cfg_validate(const mm_engine_cfg *c)
     MM_REQUIRE(c->draft <= MM_DRAFT_MAX, MM_ERR_RANGE);
     MM_REQUIRE((int)c->verbose >= MM_LOG_ERR &&
                (int)c->verbose <= MM_LOG_DBG, MM_ERR_RANGE);
+    /* YaRN (rope.h): the scaling params are range-checked whether or
+     * not the scaling is enabled -- the flags are real, so a nonsense
+     * value is refused even while dormant (factor must be a real
+     * extension factor; orig_ctx 0 = model max_pos, else sane tokens). */
+    MM_REQUIRE(c->rope_yarn == 0 || c->rope_yarn == 1, MM_ERR_RANGE);
+    MM_REQUIRE(c->rope_factor > 1.0f && c->rope_factor < 1e6f &&
+               c->rope_factor == c->rope_factor, MM_ERR_RANGE);
+    MM_REQUIRE(c->rope_orig_ctx == 0 ||
+               c->rope_orig_ctx <= MM_MAX_SEQ, MM_ERR_RANGE);
+    /* Speculative decoding: validated scaffolding (docs/dflash2.md).
+     * The flags are real; the draft/verify loop is not built yet, so a
+     * non-off backend must always carry a window, the draft LM head
+     * flag needs a backend, and a window without a backend is refused. */
+    MM_REQUIRE(c->spec >= 0 && c->spec <= 2, MM_ERR_RANGE);
+    MM_REQUIRE(c->lm_head_draft == 0 || c->lm_head_draft == 1,
+               MM_ERR_RANGE);
+    if (c->lm_head_draft)
+        MM_REQUIRE(c->spec != 0, MM_ERR_RANGE);
+    if (c->spec != 0)
+        MM_REQUIRE(c->draft >= 1, MM_ERR_RANGE);
+    else
+        MM_REQUIRE(c->draft == 0, MM_ERR_RANGE);
+    /* Weights profile + vision hook. */
+    MM_REQUIRE(c->profile_id == 0 || c->profile_id <= (uint32_t)MM_N_PROFILES,
+               MM_ERR_RANGE);
+    MM_REQUIRE(c->vision == 0 || c->vision == 1, MM_ERR_RANGE);
     return mm_policy_check(c->temperature, c->top_k, c->top_p);
 }

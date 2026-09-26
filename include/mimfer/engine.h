@@ -37,6 +37,7 @@
 #include "tokenizer.h"
 #include "sampling.h"
 #include "telemetry.h"
+#include "rope.h"
 
 /* ------------------------------------------------ tensor registry */
 /*
@@ -99,6 +100,8 @@ struct mm_engine {
     mm_engine_cfg cfg;
     mm_dev_info   dev;
     mm_model_cfg  mc;
+    mm_rope       rope;           /* effective RoPE table (plain or YaRN)  */
+    const mm_profile *profile;    /* selected weights profile (or NULL)     */
     mm_artifact  *art;          /* open handle (lazy mmap sections)       */
     mm_tensreg    reg;          /* loaded tensors                         */
     mm_arena      w_arena;      /* weights (bump, never reset)            */
@@ -143,5 +146,12 @@ void      mm_engine_destroy(mm_engine *e);
 /* Slot access for the scheduler (slots live in mm_sched, defined there). */
 const mm_abufs *mm_engine_ab(const mm_engine *e);
 const mm_ctrl  *mm_engine_ctrl_dev(const mm_engine *e);
+
+/* Vision hook (planned pipeline): submit an image for the vision tower.
+ * The surface is real -- the flag parses, the request is validated
+ * (non-empty, engine loaded, cfg.vision on) -- but image execution is
+ * planned work: until the vision pipeline lands the call returns
+ * MM_ERR_UNSUPPORTED. */
+mm_status mm_engine_submit_image(mm_engine *e, const void *px, size_t n);
 
 #endif /* MIMFER_ENGINE_H */
