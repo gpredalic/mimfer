@@ -21,6 +21,11 @@
  * (there is no device to stage to; the host build's "async" copies are
  * synchronous memcpys in cuda_rt.c).
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_CUDA_MEM_H
 #define MIMFER_CUDA_MEM_H
 
@@ -36,3 +41,6 @@ mm_status mm_pin_alloc(size_t bytes, void **out);
 void      mm_pin_free(void *p);
 
 #endif /* MIMFER_CUDA_MEM_H */
+#ifdef __cplusplus
+}
+#endif

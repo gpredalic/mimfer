@@ -19,6 +19,11 @@
  * split is what keeps it testable: the CPU reference build exercises the
  * exact same scheduler against a tiny fake model.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_SCHED_H
 #define MIMFER_SCHED_H
 
@@ -71,3 +76,6 @@ uint32_t  mm_sched_active(const mm_sched *s);
 uint32_t  mm_sched_queued(const mm_sched *s);
 
 #endif /* MIMFER_SCHED_H */
+#ifdef __cplusplus
+}
+#endif

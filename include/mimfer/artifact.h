@@ -43,6 +43,11 @@
  * unknown types with the SKIPPABLE flag are ignored (forward), and a
  * reader older than min_reader refuses the file (backward).
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_ARTIFACT_H
 #define MIMFER_ARTIFACT_H
 
@@ -140,3 +145,6 @@ mm_status mm_mbuf_read(const uint8_t **p, const uint8_t *end,
                        const uint8_t **sval, uint32_t *slen);
 
 #endif /* MIMFER_ARTIFACT_H */
+#ifdef __cplusplus
+}
+#endif

@@ -17,6 +17,11 @@
  * which is what keeps accepted/rejected sequences identical to
  * non-speculative sampling.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_SAMPLING_H
 #define MIMFER_SAMPLING_H
 
@@ -40,3 +45,6 @@ static inline uint64_t mm_rng_fixed32(uint64_t u)
 mm_status mm_policy_check(float temperature, int top_k, float top_p);
 
 #endif /* MIMFER_SAMPLING_H */
+#ifdef __cplusplus
+}
+#endif

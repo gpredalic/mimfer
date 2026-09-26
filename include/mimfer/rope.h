@@ -29,6 +29,11 @@
  * powf(1/theta, 2i/rope_dim) and mscale == 1.0, so the golden reference
  * is unchanged when YaRN is off.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_ROPE_H
 #define MIMFER_ROPE_H
 
@@ -67,3 +72,6 @@ void mm_rope_desc(const mm_rope *r, const mm_model_cfg *mc, char *buf,
                   size_t n);
 
 #endif /* MIMFER_ROPE_H */
+#ifdef __cplusplus
+}
+#endif

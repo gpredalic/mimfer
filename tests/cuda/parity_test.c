@@ -627,6 +627,45 @@ static mm_status par_decode(mm_engine *e, const mm_plan *plan,
     return MM_OK;
 }
 
+/* CPU-reference coverage vector for the GPU build.
+ *
+ * check_coverage()'s mirror assertion compares kx_cuda_oppref() against
+ * kx_cpu_oppref(). The GPU link set cannot provide the latter from
+ * src/kernels/cpu/cx.c: that TU also defines the 18 kx_op_* launchers
+ * that cx.cu defines, so linking both would multiply-define them. This
+ * copy is compiled only in the -DMM_WITH_CUDA build (the host self-check
+ * links the real definition from cpu/cx.c, where the guard is off) and
+ * MUST stay identical to kx_cpu_oppref() in src/kernels/cpu/cx.c — the
+ * same 18 executable opcodes, default 0. */
+#ifdef MM_WITH_CUDA
+int kx_cpu_oppref(int op)
+{
+    switch (op) {
+    case OP_EMBED:
+    case OP_LMHEAD:
+    case OP_RMSNORM:
+    case OP_ADD_RMSNORM:
+    case OP_GEMM_F4:
+    case OP_GEMM_BF16:
+    case OP_QKV:
+    case OP_ROPE:
+    case OP_KVSTORE:
+    case OP_ATT_DECODE:
+    case OP_ATT_PREFILL:
+    case OP_SOFTMAX_CAUSAL:
+    case OP_SILU_MUL:
+    case OP_CONV4:
+    case OP_LIN_DEC:
+    case OP_LIN_PRE:
+    case OP_COPY:
+    case OP_SAMPLE:
+        return 1;
+    default:
+        return 0;   /* OP_NOP / OP_N / unknown */
+    }
+}
+#endif
+
 /* Coverage: the GPU launcher set must mirror the CPU reference set, so no
  * executable opcode is left without a GPU path (same assertion the golden
  * writer makes for kx_cpu_oppref). Host self-check: the CPU reference set

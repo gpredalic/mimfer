@@ -15,6 +15,7 @@
 
 #if defined(MM_WITH_CUDA)
 #include <cuda_runtime.h>
+#include <cuda.h>   /* driver API: cuDeviceGetAttribute (memory clock rate) */
 #endif
 
 /* ------------------------------------------------------ device profile */
@@ -40,7 +41,10 @@ const mm_dev_profile MM_TARGET_PRO4000 = {
 mm_status mm_device_probe(int device_ordinal, mm_dev_info *out)
 {
 #if defined(MM_WITH_CUDA)
-    cudaDeviceProp p;
+    /* 'struct' tag, not the bare name: CUDA 13 removed the plain
+     * `cudaDeviceProp` typedef. The struct tag is stable and identical
+     * across 12.8 and 13.x, in C and C++, so this compiles on both. */
+    struct cudaDeviceProp p;
     cudaError_t e = cudaGetDeviceProperties(&p, device_ordinal);
     if (e != cudaSuccess) {
         MM_LOGE("cudaGetDeviceProperties(%d): %s",
@@ -48,7 +52,11 @@ mm_status mm_device_probe(int device_ordinal, mm_dev_info *out)
         return MM_ERR_CUDA;
     }
     memset(out, 0, sizeof *out);
-    snprintf(out->name, sizeof out->name, "%s", p.name);
+    /* p.name is 256 bytes, out->name 128: bound the source explicitly
+     * (real device names are far shorter; this keeps the copy warning-
+     * free at -O2 where -Wformat-truncation fires). */
+    snprintf(out->name, sizeof out->name, "%.*s",
+             (int)(sizeof out->name - 1), p.name);
     out->cc_major = p.major;
     out->cc_minor = p.minor;
     out->sm_count = p.multiProcessorCount;
@@ -58,8 +66,23 @@ mm_status mm_device_probe(int device_ordinal, mm_dev_info *out)
     out->max_threads_per_sm = p.maxThreadsPerMultiProcessor;
     out->regs_per_sm = p.regsPerMultiprocessor;
     {
-        /* Derived bandwidth: SDR clock x bus width x 2 (DDR), GB/s. */
-        double hz = (double)p.memoryClockRate * 1000.0;
+        /* Derived bandwidth: SDR clock x bus width x 2 (DDR), GB/s.
+         * The clock rate is no longer a cudaDeviceProp member (removed in
+         * CUDA 13); query the driver attribute instead. Same value as the
+         * old p.memoryClockRate field (kHz), on 12.8 and 13.x alike.
+         * Link: -lcuda (NVCCFLAGS). */
+        CUdevice dev;
+        int clock_khz;
+        if (cuInit(0) != CUDA_SUCCESS ||
+            cuDeviceGet(&dev, device_ordinal) != CUDA_SUCCESS ||
+            cuDeviceGetAttribute(&clock_khz,
+                                 CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE,
+                                 dev) != CUDA_SUCCESS) {
+            MM_LOGE("cuDeviceGetAttribute(MEMORY_CLOCK_RATE, %d) failed",
+                    device_ordinal);
+            return MM_ERR_CUDA;
+        }
+        double hz = (double)clock_khz * 1000.0;
         double bw = hz * (double)p.memoryBusWidth / 8.0 * 2.0;
         out->bw_gbps = (size_t)(bw / 1e9);
     }

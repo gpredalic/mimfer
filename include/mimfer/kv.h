@@ -29,6 +29,11 @@
  *     no recompute), misses allocate. Eviction is LRU over the block list
  *     — a full scan is < 1 us and only runs when the pool is actually full.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_KV_H
 #define MIMFER_KV_H
 
@@ -130,3 +135,6 @@ void      mm_prefix_clear(mm_prefix *p);
 size_t    mm_prefix_count(const mm_prefix *p);
 
 #endif /* MIMFER_KV_H */
+#ifdef __cplusplus
+}
+#endif

@@ -9,6 +9,11 @@
  * field; bandwidth is derived (memClock x busWidth x 2), must be within 10%
  * of nominal. See docs/architecture.md.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_CONFIG_H
 #define MIMFER_CONFIG_H
 
@@ -194,3 +199,6 @@ void mm_engine_cfg_default(mm_engine_cfg *c);
 mm_status mm_engine_cfg_validate(const mm_engine_cfg *c);
 
 #endif /* MIMFER_CONFIG_H */
+#ifdef __cplusplus
+}
+#endif

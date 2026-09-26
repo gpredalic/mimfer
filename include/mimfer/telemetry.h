@@ -13,6 +13,11 @@
  * The ring is single-producer (the scheduler thread); readers are the CLI
  * at process end. No locks by construction.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_TELEMETRY_H
 #define MIMFER_TELEMETRY_H
 
@@ -47,3 +52,6 @@ int  mm_tel_report(const mm_tel *t, char *buf, size_t n);
 int  mm_tel_summary(const mm_tel *t, char *buf, size_t n);
 
 #endif /* MIMFER_TELEMETRY_H */
+#ifdef __cplusplus
+}
+#endif

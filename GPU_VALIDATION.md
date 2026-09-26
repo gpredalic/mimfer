@@ -11,8 +11,9 @@
 >
 > **State of the code:** the CPU reference is the correctness oracle and is
 > verified. The CUDA path (`src/cuda/`, `src/kernels/cuda/cx.cu`) is written
-> and syntax-checked, but it has **never been compiled with nvcc or run on
-> silicon**. First-run compile issues in `cx.cu` are possible; the runbook
+> and now **compiles and links against the real CUDA 13.1 toolkit**
+> (nvcc 13.1.115, driverless build via toolkit link stubs — 2026-09-26,
+> both build systems); it has not yet been **run on silicon**. The runbook
 > below is ordered so any failure is attributable to exactly one layer.
 
 ---
@@ -82,7 +83,7 @@ your report.
 | `-fmad=false` (nvcc) | The CPU oracle is compiled **without FMA contraction**. Allowing FMA on the GPU changes f32 accumulation rounding and would break the 1-bf16-ulp parity gate on computed ops. |
 | `-DMM_WITH_CUDA` | Enables the real CUDA paths in `cuda_rt.c`, `cuda_mem.c`, `alloc.c`, `engine.c`, `config.c`. Without it the tree builds the host reference (that is steps 1–2). |
 | `-arch=sm_120` | Must match the GPU. The commands below target the PRO 4000 Blackwell. **On a different GPU (soft-gated), replace with that GPU's arch** (e.g. `-arch=sm_90`, `-arch=sm_80`). Without `-arch`, nvcc uses the toolkit default, which may not produce code that runs on your device. |
-| `-x c` on every `.c` file | nvcc must compile the C sources as **C** (C linkage). The dispatcher ABI is pinned to C by the `extern "C"` guards in `include/mimfer/kernels.h` and `src/kernels/kx.h`. `src/kernels/cuda/cx.cu` is the only C++ TU (compiled as CUDA). |
+| language **by file extension** (no `-x` anywhere) | nvcc compiles the `.c` sources as **C** and `cx.cu` as CUDA from the extension alone. The dispatcher ABI is pinned to C by the `extern "C"` guards in the public headers (`include/mimfer/*.h`, `src/model/tensor_registry.h`). **Do NOT pass `-x` per source**: in CUDA 13.1 it is a *global* last-value-wins option (nvcc warns "incompatible redefinition for option 'x'"), so any `-x` on the line forces one language on **all** files — the old per-source `-x c` recipes compiled `cx.cu` as plain C (no `__global__`, no `<<<>>>`). Verified against the real toolkit, 2026-09-26. |
 | `-O2` (nvcc) | Used by the verified toolchain; keep it for comparability. |
 | host builds | `-std=c11 -Wall -Wextra -Werror -lm` |
 | include paths | `-Iinclude -Isrc/model -Isrc/kernels` — `src/model` (tensor_registry.h) and `src/kernels` (kx.h) are needed by the engine-linked builds; the step-1 plan-only build needs only `-Iinclude`. |
@@ -179,18 +180,23 @@ The GPU machine's own CPU remains the oracle for that session.
 ### 6.1 Build (GPU machine; `MIMFER_SOFT_DEVICE_GATE=1` if not the target card)
 ```sh
 nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
-     -Iinclude -Isrc/model -Isrc/kernels \
-     -x c tests/cuda/parity_test.c \
-     -x c src/engine/engine.c -x c src/plan/plan.c \
-     -x c src/alloc/alloc.c -x c src/config/config.c \
-     -x c src/core/mimfer.c -x c src/cuda/cuda_rt.c \
-     -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
-     -x c src/kv/kv.c -x c src/kernels/kx.c \
+     -Iinclude -Isrc/model -Isrc/kernels -lcuda \
+     tests/cuda/parity_test.c \
+     src/engine/engine.c src/plan/plan.c \
+     src/alloc/alloc.c src/config/config.c \
+     src/core/mimfer.c src/cuda/cuda_rt.c \
+     src/cuda/cuda_mem.c src/sampling/sampling.c \
+     src/kv/kv.c src/kernels/kx.c \
+     src/model/tensor_registry.c src/rope/rope.c \
+     src/sched/sched.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
-     -x c src/sched/sched.c \
      -o /tmp/parity_test
 ```
+No `-x` flags: nvcc compiles `.c` as C and `cx.cu` as CUDA by extension
+(§3.4). On a build host **without the GPU driver**, append the toolkit link
+stub to the command: `-L<cuda toolkit>/lib64/stubs` (Makefile:
+`make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs`; CMake:
+`-DMIMFER_ENABLE_CUDA=ON -DMIMFER_NVCC_EXTRA="-L<toolkit>/lib64/stubs"`).
 ### 6.2 Run
 ```sh
 /tmp/parity_test /tmp/par_golden.bin
@@ -229,16 +235,16 @@ Notes:
 ### 7.1 Build
 ```sh
 nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
-     -Iinclude -Isrc/model -Isrc/kernels \
-     -x c tests/cuda/gpu_smoke.c \
-     -x c src/engine/engine.c -x c src/plan/plan.c \
-     -x c src/alloc/alloc.c -x c src/config/config.c \
-     -x c src/core/mimfer.c -x c src/cuda/cuda_rt.c \
-     -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
-     -x c src/kv/kv.c -x c src/kernels/kx.c \
+     -Iinclude -Isrc/model -Isrc/kernels -lcuda \
+     tests/cuda/gpu_smoke.c \
+     src/engine/engine.c src/plan/plan.c \
+     src/alloc/alloc.c src/config/config.c \
+     src/core/mimfer.c src/cuda/cuda_rt.c \
+     src/cuda/cuda_mem.c src/sampling/sampling.c \
+     src/kv/kv.c src/kernels/kx.c \
+     src/model/tensor_registry.c src/rope/rope.c \
+     src/sched/sched.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
-     -x c src/sched/sched.c \
      -o /tmp/gpu_smoke
 ```
 ### 7.2 Run
@@ -296,9 +302,10 @@ Any finding must be reported per §10 (first finding verbatim).
 | `error: unsupported gpu architecture 'compute_120'` | Toolkit < 12.8 | Upgrade to CUDA 12.8+, or (on a non-target card) use that card's `-arch` + `MIMFER_SOFT_DEVICE_GATE=1`. |
 | `cuda_runtime.h: No such file or directory` | Toolkit not installed / not on PATH | Install the toolkit; verify `nvcc --version`. |
 | `undefined reference to kx_op_embed` (or other `kx_op_*` / `kx_cuda_oppref`) | `-DMM_WITH_CUDA` missing, or `src/kernels/cuda/cx.cu` missing from the command | Use the verbatim command from §6.1/§7.1. |
-| `undefined reference to _Z16kx_cuda_opprefP...` (mangled symbol) | the `extern "C"` guards in `include/mimfer/kernels.h` / `src/kernels/kx.h` were altered | Restore the guards (do not "clean up" the `#ifdef __cplusplus` blocks). |
+| `undefined reference to _Z16kx_cuda_opprefP...` (mangled symbol) | the `extern "C"` guards in the public headers (`include/mimfer/*.h`, `src/model/tensor_registry.h`) were altered | Restore the guards (do not "clean up" the `#ifdef __cplusplus` blocks). |
 | C-compile errors inside `.c` files under nvcc | host-compiler drift (nvcc compiles the C TUs with the system C compiler) | Build the identical source list with plain `gcc` (step-1 style) to split host-TU errors from `.cu` errors; report which layer fails. |
-| `cx.cu` compile errors | first-ever nvcc compile of the kernel file | **Expected risk.** Report verbatim (nvcc version, full message, line number); the rest of the tree is verified, so these are the only plausible build failures. |
+| `undefined reference to cuInit` / `cuDeviceGet*` (driver API) | host has the toolkit but **no GPU driver** — the driver API (`-lcuda`) cannot resolve | Link the toolkit's driver stub: append `-L<cuda toolkit>/lib64/stubs` to the command (Makefile: `NVCC_EXTRA`, CMake: `-DMIMFER_NVCC_EXTRA`). Link-only; no codegen impact. Run the binaries on the GPU machine. |
+| `cx.cu` compile errors | toolkit-version drift or a tree edit (cx.cu is known-good on nvcc 13.1.115 as of 2026-09-26) | Report verbatim (nvcc version, full message, line number); first check `nvcc --version` matches 12.8+/13.x expectations, then treat it as a regression against the verified build. |
 
 ### 9.2 Runtime failures (at engine create / load)
 | Symptom | Cause | Action |

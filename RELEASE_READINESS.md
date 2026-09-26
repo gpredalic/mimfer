@@ -11,10 +11,12 @@
 - **Host (CPU) reference: release-ready.** Planner, CPU kernels, engine,
   KV pool, scheduler, sampling — all implemented and verified (unit +
   smoke + ASan/UBSan), deterministic across runs.
-- **GPU path: code-complete, not hardware-verified.** `src/cuda/` and
-  `src/kernels/cuda/cx.cu` have never been compiled with nvcc or executed
-  on silicon. No GPU claim may be made until
-  `VALIDATION_CHECKLIST.md` passes on real hardware.
+- **GPU path: code-complete and now build-verified, not hardware-verified.**
+  `src/cuda/` and `src/kernels/cuda/cx.cu` compile and link against the real
+  CUDA 13.1 toolkit (nvcc 13.1.115, driverless build via toolkit link stubs —
+  2026-09-26, Makefile and CMake) but have not been **executed on silicon**.
+  No GPU claim may be made until `VALIDATION_CHECKLIST.md` passes on real
+  hardware.
 - **Known deferred scope** (by design, documented in-tree): artifact
   loading, tokenizer, telemetry, FP8 KV, MTP draft — written or declared,
   not integrated (§3).
@@ -59,12 +61,12 @@
 
 | # | Risk | Likelihood / impact | Mitigation / status |
 |---|------|--------------------|---------------------|
-| R1 | **`cx.cu` has never been compiled.** First nvcc run may surface C++/CUDA-specific compile errors in the only uncompiled TU. | Medium / blocks everything downstream | Isolated by build order in `GPU_VALIDATION.md`; all 14 other TUs are verified. Failure mode is a build error, not silent misbehavior. |
+| R1 | **First real-toolkit compile is done, first silicon run is not.** `cx.cu` + the full GPU link set now compile and link clean under nvcc 13.1.115 (driverless, 2026-09-26); what remains is execution on a GPU with the driver — first-run issues are now runtime-layer (launch, graph capture, device attributes), not compile-layer. | Medium / blocks everything downstream | Isolated by build order in `GPU_VALIDATION.md`; the 14 other TUs plus `cx.cu` are build-verified. |
 | R2 | First-run driver/toolkit interaction: launch attributes on graph nodes, thread-local stream capture, L2 access-policy windows on the real 12.8/13.x driver. | Low-Medium | L2 window node rejection is soft by design (warning, continue); capture is a single documented path (greedy, at load). Any capture error is treated as a real bug (§9.2 of the runbook). |
 | R3 | **Golden is compiler/machine-dependent** (FP behavior of the host compiler that wrote it). A golden built on one machine can mismatch another's CPU reference. | Medium / would corrupt attribution of parity failures | Oracle pre-gate: `par_selfcheck` must pass on the validating machine before any GPU comparison; golden rebuild rule documented (`GPU_VALIDATION.md` §5.3). |
 | R4 | Device-profile fields marked **ESTIMATE** (bandwidth 672 GB/s, L2 96 MiB, smem 100 KiB) — the derived-bandwidth check (±10%) can gate the *real* PRO 4000 if driver-reported clocks/bus differ. | Medium on the target card | Probed values logged at startup; `MIMFER_SOFT_DEVICE_GATE` bypass; the report template captures the probed line. |
 | R5 | L2 window is v1: one window on **all** kernel nodes of each graph; per-layer windows come with the per-layer plan split (documented in `cuda_rt.c`). | Low (optimization only) | Node-level rejection is non-fatal. |
-| R6 | **Repo hygiene:** `tmux-client-153455.log` (18 KB), `tmux-out-153457.log` (64 MB), `tmux-server-153457.log` (**6.4 GB**) at the repo root — session junk, not project files. | Low (disk space, confusing distribution) | Recommend deletion (human decision). |
+| R6 | **Repo hygiene:** `tmux-client-153455.log` (3.5 KB), `tmux-out-153457.log` (11 MB), `tmux-server-153457.log` (**1.3 GB**) at the repo root — session junk, not project files (sizes measured 2026-09-26). | Low (disk space, confusing distribution) | Recommend deletion (human decision). |
 | R7 | Working copy has **no VCS** (no `.git`); history exists only via `READ_MEMORY.md`. | Low-Medium | Copy the tree before GPU validation; consider git init with the docs as the first commit. |
 
 ## 5. Unverified assumptions
@@ -132,7 +134,21 @@ All commands, expected outputs, and failure interpretation:
   referenced by `flags.h`/`config.h`/`engine.c` and **did not exist** before
   2026-09-26 — it is now created and is the declared scope of the
   speculative surface.
-- **Junk files at repo root:** three `tmux-*.log` files, total ≈ 6.4 GB (R6).
+- **Junk files at repo root:** three `tmux-*.log` files, total ≈ 1.3 GB
+  (R6; sizes re-measured 2026-09-26).
+- **Final build audit (2026-09-26; full record in `BUILD_AUDIT.md`):**
+  two critical GPU-link defects found and fixed — B1: the Makefile GPU
+  recipes omitted `src/kernels/cuda/cx.cu` from the nvcc link line
+  (undefined `kx_op_*`/`kx_cuda_oppref`); B10: the GPU `parity_test`
+  link set had no provider of `kx_cpu_oppref` (fixed with a
+  `MM_WITH_CUDA`-guarded reference copy in `tests/cuda/parity_test.c`;
+  host recipe byte-identical, `make test` green). Also recorded: no
+  CMake exists (Make is the sole build system; the documented
+  verbatim `gcc`/`nvcc` commands match the Makefile), the host build
+  is hermetic (no CUDA toolkit needed — `cuda_runtime.h` is absent on
+  this host and the suite is green), `artifact.c`/`tokenizer.c`/
+  `telemetry.c` pass `-fsyntax-only` under the exact release flags
+  (not latent breakage, still unregistered), zero TODO/FIXME markers.
 - **Documentation gaps found in the audit:** the documented nvcc commands in
   `READ_MEMORY.md` §4.6 carried no `-arch` flag; `GPU_VALIDATION.md` §6/§7
   add `-arch=sm_120` (replace per card). The verbatim `gcc`/`nvcc` recipes in

@@ -12,6 +12,11 @@
  * No C++, no exceptions, no third-party headers. CUDA enters only through
  * <cuda_runtime.h> inside src/cuda/ and src/kernels/.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_H
 #define MIMFER_H
 
@@ -150,4 +155,6 @@ static inline uint64_t mm_splitmix64(uint64_t *state)
 }
 
 #endif /* MIMFER_H */
-
+#ifdef __cplusplus
+}
+#endif

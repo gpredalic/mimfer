@@ -22,6 +22,11 @@
  * The plan builder is a pure function of (model_cfg, registry, buffers),
  * which is what makes the whole thing testable without a GPU.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_ENGINE_H
 #define MIMFER_ENGINE_H
 
@@ -155,3 +160,6 @@ const mm_ctrl  *mm_engine_ctrl_dev(const mm_engine *e);
 mm_status mm_engine_submit_image(mm_engine *e, const void *px, size_t n);
 
 #endif /* MIMFER_ENGINE_H */
+#ifdef __cplusplus
+}
+#endif

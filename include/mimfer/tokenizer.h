@@ -23,6 +23,11 @@
  * Decode: string concatenation by construction (the Qwen vocab uses
  * byte-level BPE, so concatenation is exact).
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_TOKENIZER_H
 #define MIMFER_TOKENIZER_H
 
@@ -61,3 +66,6 @@ const char *mm_tok_str(const mm_tok *t, uint32_t id);
 uint32_t mm_tok_eos(const mm_tok *t);
 
 #endif /* MIMFER_TOKENIZER_H */
+#ifdef __cplusplus
+}
+#endif
