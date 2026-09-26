@@ -4,18 +4,23 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-26 (session handoff: final build audit before
-> RTX PRO 4000 validation — full tree reviewed; two critical GPU-link
-> defects found and fixed (B1: `cx.cu` missing from the Makefile nvcc
-> link line; B10: no `kx_cpu_oppref` provider in the GPU `parity_test`
-> link set); new docs `BUILD_AUDIT.md`, `SOURCE_TREE.md`,
-> `MODULE_DEPENDENCIES.md`; host suite green after the changes;
-> README/RELEASE_READINESS synced)
+> **Last updated:** 2026-09-26 (session handoff: CUDA 13.1 real-toolkit
+> build — the GPU build now COMPILES + LINKS with the real local
+> nvcc 13.1.115, driverless via the toolkit link stubs; root cause of
+> the old recipe failure found and fixed: nvcc 13.1's `-x` is a GLOBAL
+> last-value-wins option, so per-source `-x c` compiled `cx.cu` as plain
+> C — all `-x` removed, language by extension (Makefile + CMake);
+> `extern "C"` guards added to 17 public headers (C++ TU linkage);
+> `cx.cu` C-only idioms fixed (comma `dim3` decls, `malloc` casts,
+> `math.h`); `config.c` CUDA 13.1 driver-API probe; `-lcuda` in both
+> link lines; both build systems verified end-to-end, host suite
+> re-green, fatbin inspected (14 kernels, sm_120, zero warnings);
+> GPU_VALIDATION.md / RELEASE_READINESS.md / this memory synced)
 > **Project health:** GREEN
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
-> **GPU parity:** TOOLING COMPLETE, host self-check VERIFIED · **GPU execution:** PENDING (no nvcc/GPU on this host)
+> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** PENDING (no GPU driver on this host)
 > **External validation pack:** COMPLETE (GPU_VALIDATION.md runbook, VALIDATION_CHECKLIST.md go/no-go, RELEASE_READINESS.md status/risks)
-> **Build system:** COMPLETE — GNU Make only (Makefile at repo root); `make` / `make test` verified end-to-end
+> **Build system:** COMPLETE — Makefile (canonical) + CMakeLists.txt (parity, optional CUDA via `-DMIMFER_ENABLE_CUDA=ON`); both verified end-to-end 2026-09-26
 
 ---
 
@@ -47,7 +52,7 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | Project governance: .clinerules (mandatory rules), .gitignore, git repo initialized (main) |
 | [COMPLETE] | Canonical build system: root Makefile (GNU Make only) — host + CUDA build rules, `make` / `make test` / `make cuda` / `make help` / `make clean` / `make distclean`; artifacts in `build/` |
 | [COMPLETE] | Final build audit (2026-09-26): `BUILD_AUDIT.md` (findings B1–B10, conformance matrix, evidence), `SOURCE_TREE.md` (annotated file inventory), `MODULE_DEPENDENCIES.md` (include graph + module map); two critical GPU-link defects fixed (B1, B10) |
-| [PENDING]  | GPU execution of parity + smoke tests (needs nvcc + a GPU) |
+| [PENDING]  | GPU execution of parity + smoke tests (GPU build now compiles + links driverless with real nvcc 13.1; a GPU host with the driver is what's missing) |
 | [PENDING]  | Blackwell Optimizations |
 
 Note: the CUDA execution path is written in full — `src/cuda/cuda_rt.c`
@@ -268,53 +273,59 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
   PARITY PASSED (/tmp/par_golden.bin: 1 prefill + 16 decode rounds)
   ```
 
-### 4.6 CUDA builds — PENDING GPU VERIFICATION (written + syntax-checked only)
+### 4.6 CUDA builds — BUILD-VERIFIED on the real toolkit, execution PENDING
 
-This host has **no nvcc / CUDA toolkit / GPU**; the commands below are the
-documented build for a GPU machine and are marked UNVERIFIED until run there.
-They were syntax-checked on this host with `gcc -fsyntax-only` (C sources,
-`-DMM_WITH_CUDA`, stub `cuda_runtime.h` exposing `cudaStream_t`); `cx.cu`
-itself has never been compiled.
+This host has the **real CUDA 13.1 toolkit** (nvcc 13.1.115) but no GPU
+driver. The GPU build (`make cuda` / CMake `-DMIMFER_ENABLE_CUDA=ON`)
+COMPILES and LINKS cleanly here via the toolkit's driver link stubs
+(`NVCC_EXTRA` / `MIMFER_NVCC_EXTRA` = `-L<toolkit>/lib64/stubs`;
+`-lcuda` is in the link line). Verified 2026-09-26: zero warnings, sm_120
+fatbin inspected (all 14 kernels present). What remains is execution on a
+GPU with the driver.
+
+**nvcc `-x` root cause (fixed):** CUDA 13.1's `-x` is a *global*
+last-value-wins option (nvcc warns "incompatible redefinition for option
+'x'"), so the old per-source `-x c` flags forced plain C on **every**
+file, including `cx.cu`. All `-x` flags are gone from the Makefile, CMake,
+and documented recipes — nvcc now picks the language by extension (`.c` →
+C, `.cu` → CUDA/C++).
 
 **Canonical runbook: `GPU_VALIDATION.md`** (machine/CUDA/compiler
 requirements, the full ordered procedure incl. the `par_selfcheck` oracle
 pre-gate, expected outputs, troubleshooting, bug-report template). The
-commands in that document add `-arch=sm_120` (PRO 4000 Blackwell; replace
-per card) and document `MIMFER_SOFT_DEVICE_GATE=1` for non-target cards —
-the commands below predate those two additions and still work on the
-target card with a 12.8+ toolkit whose default arch covers sm_120.
-Go/no-go gate: `VALIDATION_CHECKLIST.md`.
+commands below are **verbatim** from its §6.1/§7.1 (Makefile recipes are
+identical). Go/no-go gate: `VALIDATION_CHECKLIST.md`.
 
 ```sh
 # Parity test (numeric gate): compares GPU op outputs to the CPU golden.
 # Run on the GPU machine after building /tmp/par_golden.bin on ANY host
 # (the golden is CPU-written and machine-independent):
-nvcc -O2 -fmad=false -DMM_WITH_CUDA \
-     -Iinclude -Isrc/model -Isrc/kernels \
-     -x c tests/cuda/parity_test.c \
-     -x c src/engine/engine.c -x c src/plan/plan.c \
-     -x c src/alloc/alloc.c -x c src/config/config.c \
-     -x c src/core/mimfer.c -x c src/cuda/cuda_rt.c \
-     -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
-     -x c src/kv/kv.c -x c src/kernels/kx.c \
+nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
+     -Iinclude -Isrc/model -Isrc/kernels -lcuda \
+     tests/cuda/parity_test.c \
+     src/engine/engine.c src/plan/plan.c \
+     src/alloc/alloc.c src/config/config.c \
+     src/core/mimfer.c src/cuda/cuda_rt.c \
+     src/cuda/cuda_mem.c src/sampling/sampling.c \
+     src/kv/kv.c src/kernels/kx.c \
+     src/model/tensor_registry.c src/rope/rope.c \
+     src/sched/sched.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
-     -x c src/sched/sched.c \
      -o /tmp/parity_test
 /tmp/parity_test /tmp/par_golden.bin
 
 # End-to-end GPU smoke test (graph + direct dispatch, oracle heads):
-nvcc -O2 -fmad=false -DMM_WITH_CUDA \
-     -Iinclude -Isrc/model -Isrc/kernels \
-     -x c tests/cuda/gpu_smoke.c \
-     -x c src/engine/engine.c -x c src/plan/plan.c \
-     -x c src/alloc/alloc.c -x c src/config/config.c \
-     -x c src/core/mimfer.c -x c src/cuda/cuda_rt.c \
-     -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
-     -x c src/kv/kv.c -x c src/kernels/kx.c \
+nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
+     -Iinclude -Isrc/model -Isrc/kernels -lcuda \
+     tests/cuda/gpu_smoke.c \
+     src/engine/engine.c src/plan/plan.c \
+     src/alloc/alloc.c src/config/config.c \
+     src/core/mimfer.c src/cuda/cuda_rt.c \
+     src/cuda/cuda_mem.c src/sampling/sampling.c \
+     src/kv/kv.c src/kernels/kx.c \
+     src/model/tensor_registry.c src/rope/rope.c \
+     src/sched/sched.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
-     -x c src/sched/sched.c \
      -o /tmp/gpu_smoke
 /tmp/gpu_smoke
 ```
@@ -322,7 +333,7 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
 - **`-fmad=false` is mandatory** for `cx.cu`: the CPU reference (baseline
   x86-64) emits mul+add only; allowing FMA contraction on the GPU would
   change f32 accumulation rounding and blow the 1-ulp bf16 parity gate.
-- Linkage note: `kernels.h` / `kx.h` pin C linkage on the dispatcher ABI
+- Linkage note: the 17 public headers pin C linkage on the dispatcher ABI
   (`extern "C"` guards) because the launchers are DEFINED in the C++
   translation unit `cx.cu` while the dispatcher and tests are C. Do not
   remove those guards.
@@ -338,12 +349,17 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
   GPU SMOKE PASSED
   ```
 
-### 4.7 Canonical build: the root `Makefile` (GNU Make only, VERIFIED 2026-09-26)
+### 4.7 Canonical builds: the root `Makefile` (GNU Make) + `CMakeLists.txt` (parity; VERIFIED 2026-09-26)
 
 The `Makefile` at the repository root is the **canonical** build/validate
-system. No CMake/Meson/Bazel — one Makefile, plain variables, no generated
-files. All artifacts land in `build/` (git-ignored; the Makefile and
-`tests/` are explicitly NOT ignored).
+system; `CMakeLists.txt` (CMake 3.16+, Ninja) is a parity build producing the
+same 7 host binaries with identical flags, plus optional CUDA
+(`-DMIMFER_ENABLE_CUDA=ON`, `-DMIMFER_NVCC_EXTRA` for driverless stub
+linking; default target stays host-only, `--target cuda` for the GPU
+binaries — mirroring `make` default / `make cuda`). Plain variables, no
+generated files. All artifacts land in `build/` (Makefile) / `build/`
+(CMake) — git-ignored; the Makefile, CMakeLists.txt and `tests/` are
+explicitly NOT ignored.
 
 | Target | Effect |
 |--------|--------|
@@ -351,7 +367,7 @@ files. All artifacts land in `build/` (git-ignored; the Makefile and
 | `make host` | same as default |
 | `make test` / `make tests` | run the host suite strictly sequentially (fail-fast): `plan-test` → `rope-test` → `flags-test` → `engine-smoke` → `engine-features` → `parity-selfcheck` (the last builds `par_golden`, writes `build/par_golden.bin`, then replays it) — unit tests first, engine smoke, feature gates, parity oracle gate last |
 | `make plan-test` / `make rope-test` / `make flags-test` / `make engine-smoke` / `make engine-features` / `make golden` / `make parity-selfcheck` | single test targets (aliases: `make parity` → parity-selfcheck, `make smoke` → engine-smoke) |
-| `make cuda` | build `build/parity_test` + `build/gpu_smoke` with nvcc (needs nvcc on PATH; prints a run command, never runs GPU tests) |
+| `make cuda` | build `build/parity_test` + `build/gpu_smoke` with nvcc (needs nvcc on PATH; prints a run command, never runs GPU tests; driverless hosts: `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs`) |
 | `make gpu-parity` / `make gpu-smoke` | CUDA build-only, with the run command printed |
 | `make check-nvcc` | nvcc presence probe (polite error if missing) |
 | `make help` | document every target |
@@ -549,14 +565,16 @@ documentation synced (README feature-surface section, `docs/dflash2.md`
 created, `rope.c` added to every documented link set). Full host suite
 green from `make clean`.
 
-**NEXT TASK: external validation on a GPU machine** (this host has no nvcc /
-CUDA toolkit / GPU — the code is written, the tooling is verified on the
-host, the execution is what is missing). The process for the human
-validator is fully documented; nothing speculative remains.
+**NEXT TASK: external validation on a GPU machine** (this host now has the
+real CUDA 13.1 toolkit and the GPU build compiles + links driverless via
+toolkit stubs — what is missing is a GPU with the driver to *execute*; the
+process for the human validator is fully documented; nothing speculative
+remains).
 
 Entry points:
 - **`GPU_VALIDATION.md`** — the complete runbook (machine requirements,
-  CUDA 12.8+, the ordered build/run procedure with expected outputs,
+  CUDA 12.8+/13.x (build-verified on 13.1.115), the ordered build/run
+  procedure with expected outputs,
   parity + smoke workflows, troubleshooting, bug-report template,
   hard invariants).
 - **`VALIDATION_CHECKLIST.md`** — the go/no-go gate: build succeeds →
@@ -605,16 +623,16 @@ CUDA incrementally.
 | Determinism | VERIFIED |
 | Planner | COMPLETE |
 | CPU path | COMPLETE |
-| CUDA runtime + kernels | WRITTEN (runtime layer, device mem, cx.cu launch set; graph-capture-legal, round-boundary I/O wired) |
+| CUDA runtime + kernels | COMPILED (real nvcc 13.1.115, driverless, 2026-09-26) — runtime layer, device mem, cx.cu launch set; sm_120 fatbin inspected via cuobjdump (all 14 kernels present, zero warnings); graph-capture-legal, round-boundary I/O wired; silicon execution PENDING |
 | Parity tooling | COMPLETE + host-VERIFIED (par_golden golden writer; parity_test dual-buildable; self-check passes bit-exact) |
 | GPU smoke test | WRITTEN (gpu_smoke.c: graph vs direct, oracle heads, reproducible tokens) |
 | Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template; all link sets include `src/rope/rope.c`), VALIDATION_CHECKLIST.md (go/no-go; Gate 0 requires `make test` green), RELEASE_READINESS.md (status/risks/audit incl. the new feature rows), docs/dflash2.md (declared speculative-decoding scope); 2026-09-26 |
 | README | COMPLETE — README.md: Current Model Support (two NInfer Qwen3.8-27B reference models only), Current Artifact Support (NInfer Artifact V2/V3), Hardware Scope (RTX PRO 4000 Blackwell only; soft-gate is a testing affordance), **Engine & CLI Feature Surface** (flag-by-flag status table: wired / validated scaffolding / validated hook), Extensibility (suckless-inspired, architecture influence not code dependency); 2026-09-26 |
 | Feature surface | COMPLETE (host) — RoPE tables (`src/rope/rope.c`, plain + YaRN; plain bit-identical to legacy formula so the golden is unchanged), CLI flag grammar (`src/flags/flags.c`), weights profiles + `mm_engine_cfg_validate` cross-field rules (`src/config/`), `--spec`/`--vision` gates in `mm_engine_load`; tests: `rope_test`, `flags_test`, `engine_features_test` (e2e YaRN q-buffer difference vs plain, plain byte-identical, spec/vision refusals); declared speculative scope: docs/dflash2.md; 2026-09-26 |
-| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (branch name is a historical artifact — no CMake exists in the tree, see BUILD_AUDIT.md B4); 2026-09-26 |
-| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; host build is hermetic (no CUDA toolkit needed; `cuda_runtime.h` absent on this host, suite green) |
+| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26 |
+| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 7 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
 | Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
-| GPU execution | PENDING — no nvcc/GPU on this host; on a GPU machine: `make golden && make parity-selfcheck && make cuda`, then run the printed commands (GPU_VALIDATION.md §4–§8) |
+| GPU execution | PENDING — this host has the real CUDA 13.1 toolkit (nvcc 13.1.115) and the GPU binaries compile + link driverless (toolkit stubs); what is missing is a GPU with the driver. On a GPU machine: `make golden && make parity-selfcheck && make cuda`, then run the printed commands (GPU_VALIDATION.md §4–§8) |
 | Recommended next step | Human validation on a GPU machine: GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md (now drivable via `make` targets, §4.7) |
 | Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry written but unintegrated — all three pass `-fsyntax-only` under the exact release flags (not latent breakage); **no missing headers, no dead sources** (every TU registered, or the 3 above); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
-| Risk | cx.cu has never been compiled (no nvcc here); first GPU run may surface .cu-specific compile issues — everything around it is verified; the two guaranteed GPU-link failure modes (B1, B10) are fixed and command-line-verified via `make -n`; remaining failures would be isolated by the runbook's build order and reportable per the template |
+| Risk | Compile/link layer is CLOSED: `cx.cu` + the full GPU link set compile and link clean against the real nvcc 13.1.115 (driverless, 2026-09-26, both build systems, zero warnings, fatbin verified). Remaining risk is first **silicon** execution: graph capture, launch attributes, L2 windows, driver-reported device attributes (B1/B10 GPU-link defects already fixed). Any runtime failure is isolated by the runbook's build order and reportable per the template |

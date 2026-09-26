@@ -15,6 +15,11 @@
  * run end-to-end. It registers every tensor of the standard model with
  * deterministic bf16 values so repeated runs are byte-identical.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MM_MODEL_TENSOR_REGISTRY_H
 #define MM_MODEL_TENSOR_REGISTRY_H
 
@@ -35,3 +40,6 @@ size_t mm_model_weights_bytes(const mm_model_cfg *mc);
 mm_status mm_model_fill_fake(mm_engine *e, uint64_t seed);
 
 #endif /* MM_MODEL_TENSOR_REGISTRY_H */
+#ifdef __cplusplus
+}
+#endif

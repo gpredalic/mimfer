@@ -45,6 +45,16 @@ CUDA_ARCH ?= sm_120
 # enabled and re-validated from scratch.
 NVCCFLAGS := -O2 -fmad=false -DMM_WITH_CUDA -arch=$(CUDA_ARCH)
 NVCCFLAGS += -Iinclude -Isrc/model -Isrc/kernels
+# -lcuda: mm_device_probe() queries the memory clock rate through the driver
+# API (cuDeviceGetAttribute), which replaced the cudaDeviceProp field in
+# CUDA 13. Link-only flag: it does not change codegen, so the parity-gate
+# flags above are untouched. On a machine without a GPU driver, add
+# -L$(CUDA toolkit)/lib64/stubs so the linker can resolve it.
+NVCCFLAGS += -lcuda
+# Extra nvcc flags, appended after NVCCFLAGS (no codegen impact). On a
+# machine WITHOUT a GPU driver the linker cannot resolve -lcuda; point it
+# at the toolkit's link stub:  make cuda NVCC_EXTRA=-L<cuda toolkit>/lib64/stubs
+NVCC_EXTRA ?=
 
 BUILDDIR := build
 
@@ -87,13 +97,17 @@ FLAGS_TEST_SRCS := src/flags/flags.c $(CFG_TEST_SRCS)
 # GPU set: the same engine sources, with the CPU reference kernels replaced
 # by the CUDA launch set.
 GPU_SRCS := $(filter-out src/kernels/cpu/cx.c,$(ENGINE_SRCS)) src/kernels/cuda/cx.cu
-# nvcc must compile the .c files as C (the dispatcher ABI is pinned to C
-# linkage); cx.cu is the only C++/CUDA translation unit.
-GPU_C_SRCS := $(addprefix -x c ,$(filter %.c,$(GPU_SRCS)))
-# The .cu launch set must be passed to nvcc WITHOUT -x c (it compiles as
-# CUDA/C++) and must NOT be dropped: it defines the kx_op_* launchers for
-# the GPU build (replacing cpu/cx.c) plus kx_cuda_oppref. Omitting it from
-# the link line is a hard link failure (undefined kx_op_* / kx_cuda_oppref).
+# nvcc compiles the .c files as C (the dispatcher ABI is pinned to C
+# linkage) and cx.cu as CUDA — by EXTENSION. Do NOT pass -x: in CUDA 13.1
+# it is a GLOBAL last-value-wins option (nvcc warns "incompatible
+# redefinition for option 'x'"), so ANY -x on the line forces one language
+# on ALL files; the old per-source "-x c" approach compiled cx.cu as plain
+# C (no __global__, no <<<>>>). Verified against the real toolkit, 2026-09-26.
+GPU_C_SRCS := $(filter %.c,$(GPU_SRCS))
+# The .cu launch set must not be dropped: it defines the kx_op_* launchers
+# for the GPU build (replacing cpu/cx.c) plus kx_cuda_oppref. Omitting it
+# from the link line is a hard link failure (undefined kx_op_* /
+# kx_cuda_oppref).
 GPU_CU_SRCS := $(filter %.cu,$(GPU_SRCS))
 
 # Header changes force a rebuild (one-shot builds, no .d tracking).
@@ -159,11 +173,11 @@ $(PAR_SELFCHECK): tests/host/par_selfcheck.c $(ENGINE_SRCS) $(HDRS)
 # ---- build rules: CUDA ---------------------------------------------------------------
 $(PARITY_TEST): tests/cuda/parity_test.c $(GPU_SRCS) $(HDRS)
 	mkdir -p $(@D)
-	$(NVCC) $(NVCCFLAGS) -x c tests/cuda/parity_test.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
+	$(NVCC) $(NVCCFLAGS) $(NVCC_EXTRA) tests/cuda/parity_test.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
 
 $(GPU_SMOKE): tests/cuda/gpu_smoke.c $(GPU_SRCS) $(HDRS)
 	mkdir -p $(@D)
-	$(NVCC) $(NVCCFLAGS) -x c tests/cuda/gpu_smoke.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
+	$(NVCC) $(NVCCFLAGS) $(NVCC_EXTRA) tests/cuda/gpu_smoke.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
 # ---- targets --------------------------------------------------------------------------
 .PHONY: all host cuda test tests plan-test engine-smoke rope-test \
         flags-test engine-features golden \
@@ -295,6 +309,7 @@ help:
 	@echo "  CUDA_ARCH ?= sm_120   GPU arch (override: make CUDA_ARCH=sm_90 cuda)"
 	@echo "  CC ?= gcc             host compiler"
 	@echo "  NVCC ?= nvcc          CUDA compiler"
+	@echo "  NVCC_EXTRA ?=         extra nvcc flags (driverless: -L<toolkit>/lib64/stubs)"
 	@echo ""
 	@echo "note: GPU builds use -fmad=false until parity validation is complete —"
 	@echo "the CPU oracle is FMA-free (see the NVCCFLAGS comment, GPU_VALIDATION.md §3.4)."

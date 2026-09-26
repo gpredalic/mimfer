@@ -13,6 +13,11 @@
  * A weights profile (--weights-profile) applies its context defaults
  * unless the corresponding flag was given explicitly.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_FLAGS_H
 #define MIMFER_FLAGS_H
 
@@ -35,3 +40,6 @@ mm_status mm_flags_parse(int argc, char **argv, mm_engine_cfg *cfg, int *help);
 size_t mm_flags_help(char *buf, size_t n);
 
 #endif /* MIMFER_FLAGS_H */
+#ifdef __cplusplus
+}
+#endif

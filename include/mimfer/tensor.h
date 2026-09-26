@@ -20,6 +20,11 @@
  * The kernel that consumes a weight tile dequantizes in registers; no
  * materialized bf16 weight copy exists (it would not fit in 24 GiB).
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_TENSOR_H
 #define MIMFER_TENSOR_H
 
@@ -154,3 +159,6 @@ MM_HOSTDEV static inline float mm_f32_from_bf16(uint16_t b)
 }
 
 #endif /* MIMFER_TENSOR_H */
+#ifdef __cplusplus
+}
+#endif

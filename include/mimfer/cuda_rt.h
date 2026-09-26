@@ -20,6 +20,11 @@
  *
  * No cudaMalloc lives here: the allocator (alloc.h) owns device memory.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_CUDA_RT_H
 #define MIMFER_CUDA_RT_H
 
@@ -102,3 +107,6 @@ cudaStream_t mm_cuda_stream_raw(mm_stream_id id);
 #endif /* MM_WITH_CUDA */
 
 #endif /* MIMFER_CUDA_RT_H */
+#ifdef __cplusplus
+}
+#endif

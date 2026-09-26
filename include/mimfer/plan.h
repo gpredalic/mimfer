@@ -22,6 +22,11 @@
  * device "control" buffer that the scheduler writes each round via the
  * xfer stream before launching the graph (one 256 B H2D, async).
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_PLAN_H
 #define MIMFER_PLAN_H
 
@@ -104,3 +109,6 @@ void      mm_plan_destroy(mm_plan *p);
 int       mm_plan_dump(const mm_plan *p, char *buf, size_t n);
 
 #endif /* MIMFER_PLAN_H */
+#ifdef __cplusplus
+}
+#endif

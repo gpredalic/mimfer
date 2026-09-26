@@ -154,12 +154,13 @@ exactly in `NVCCFLAGS`. What changes:
 | `src/cuda/cuda_mem.c` | host stubs | device arenas + pinned I/O block |
 | `src/config/config.c` | device probe via stubs | real device query |
 | `src/alloc/alloc.c` | host allocator path | + CUDA-aware paths |
-| `src/kernels/cuda/cx.cu` | not compiled | compiled as C++/CUDA (no `-x c`) |
-| `tests/cuda/*` | compiled `-x c` as the host self-check (via `par_selfcheck.c`'s textual include, without the define) | compiled `-x c` by nvcc with the define; `gpu_smoke.c` `#error`s without it |
+| `src/kernels/cuda/cx.cu` | not compiled | compiled as C++/CUDA (language by extension; **no `-x`** — CUDA 13.1's `-x` is a global last-value-wins option) |
+| `tests/cuda/*` | compiled as C as the host self-check (via `par_selfcheck.c`'s textual include, without the define) | compiled as C by nvcc (by extension) with the define; `gpu_smoke.c` `#error`s without it |
 
 Consequence (BUILD_AUDIT.md B5): the host build is hermetic — it needs
-no CUDA toolkit at all (verified: `cuda_runtime.h` is absent on this
-host and the host suite is green).
+no CUDA toolkit at all (verified: the default host target has never
+required the toolkit and the host suite is green; note this host now has
+the CUDA 13.1 toolkit installed, used only by the opt-in CUDA builds).
 
 ## 5. External dependencies
 

@@ -57,6 +57,7 @@
  */
 #include <cuda_runtime.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "mimfer/kernels.h"
 #include "mimfer/engine.h"
@@ -154,7 +155,8 @@ mm_status kx_op_embed(const mm_kcall *kc)
         return MM_ERR_STATE;
     CU_CK(cudaMemsetAsync(flag, 0, 4, kx_st()));
     {
-        dim3 grid(M), block(H / 8 < 256 ? H / 8 : 256);
+        dim3 grid(M);
+        dim3 block(H / 8 < 256 ? H / 8 : 256);
         k_embed<<<grid, block, 0, kx_st()>>>(e->ctrl_dev,
                                              (const uint16_t *)op->a,
                                              (uint16_t *)op->c, M, H, V,
@@ -204,7 +206,8 @@ mm_status kx_op_rmsnorm(const mm_kcall *kc)
 {
     const mm_op_desc *op = kc->op;
     const mm_engine *e = kc->e;
-    dim3 grid(op->n0), block(1);
+    dim3 grid(op->n0);
+    dim3 block(1);
     k_rmsnorm<<<grid, block, 0, kx_st()>>>((const uint16_t *)op->a,
                                            (const uint16_t *)op->b,
                                            (uint16_t *)op->c,
@@ -243,7 +246,8 @@ mm_status kx_op_add_rmsnorm(const mm_kcall *kc)
 {
     const mm_op_desc *op = kc->op;
     const mm_engine *e = kc->e;
-    dim3 grid(op->n0), block(1);
+    dim3 grid(op->n0);
+    dim3 block(1);
     k_add_rmsnorm<<<grid, block, 0, kx_st()>>>((uint16_t *)(uintptr_t)op->a,
                                                (const uint16_t *)op->b,
                                                (uint16_t *)op->c,
@@ -304,7 +308,8 @@ __global__ void k_gemm_bf16(const uint16_t *x, const uint16_t *w,
 static mm_status kx_gemm_bf16_launch(const mm_kcall *kc)
 {
     const mm_op_desc *op = kc->op;
-    dim3 grid(op->n2), block(1);
+    dim3 grid(op->n2);
+    dim3 block(1);
 
     grid.y = op->n0;
     k_gemm_bf16<<<grid, block, 0, kx_st()>>>((const uint16_t *)op->a,
@@ -354,7 +359,8 @@ mm_status kx_op_gemm_f4(const mm_kcall *kc)
 {
     const mm_op_desc *op = kc->op;
     mm_wt W;
-    dim3 grid(op->n2), block(1);
+    dim3 grid(op->n2);
+    dim3 block(1);
 
     if (op->n1 % 16 != 0)
         return MM_ERR_SHAPE;      /* e4m3 group scale spans 16 columns */
@@ -409,7 +415,8 @@ mm_status kx_op_rope(const mm_kcall *kc)
     const uint32_t M = op->n0, rd = op->n1;
     const uint32_t hd = mc->head_dim, qdim = mc->q_heads * hd;
     const uint32_t kvdim = mc->kv_heads * hd;
-    dim3 grid(rd / 2, mc->q_heads + mc->kv_heads, M), block(1);
+    dim3 grid(rd / 2, mc->q_heads + mc->kv_heads, M);
+    dim3 block(1);
 
     if (!op->a || !op->b || rd < 2 || rd > hd)
         return MM_ERR_STATE;
@@ -460,7 +467,8 @@ mm_status kx_op_kvstore(const mm_kcall *kc)
     const uint32_t M = op->n1, hd = mc->head_dim;
     const uint32_t kvdim = mc->kv_heads * hd;
     const uint32_t li = op->n0;      /* layer, per the CPU reference */
-    dim3 grid(M, mc->kv_heads), block(1);
+    dim3 grid(M, mc->kv_heads);
+    dim3 block(1);
 
     if (!kv || !op->c || !kv->v_base[li])
         return MM_ERR_STATE;
@@ -563,7 +571,8 @@ mm_status kx_op_att_decode(const mm_kcall *kc)
     const void *kb = op->a, *vb = e->kv ? e->kv->v_base[op->layer] : 0;
     const float sc = 1.0f / sqrtf((float)hd);
     const uint32_t g = mc->q_heads / mc->kv_heads;
-    dim3 grid(M, mc->q_heads), block(1);
+    dim3 grid(M, mc->q_heads);
+    dim3 block(1);
 
     if (!e->kv || !vb)
         return MM_ERR_STATE;
@@ -644,7 +653,8 @@ mm_status kx_op_att_prefill(const mm_kcall *kc)
     const void *kb = op->a, *vb = e->kv ? e->kv->v_base[op->layer] : 0;
     const float sc = 1.0f / sqrtf((float)hd);
     const uint32_t g = mc->q_heads / mc->kv_heads;
-    dim3 grid(M, mc->q_heads), block(1);
+    dim3 grid(M, mc->q_heads);
+    dim3 block(1);
 
     if (!e->kv || !vb)
         return MM_ERR_STATE;
@@ -700,7 +710,8 @@ mm_status kx_op_softmax_causal(const mm_kcall *kc)
 {
     const mm_op_desc *op = kc->op;
     uint32_t rows = op->n0, cols = op->n1, kv_start = op->n2;
-    dim3 grid(rows), block(1);
+    dim3 grid(rows);
+    dim3 block(1);
 
     if (!op->a || cols == 0)
         return MM_ERR_STATE;
@@ -821,7 +832,8 @@ static mm_status kx_lin_launch(const mm_kcall *kc)
     const uint32_t ch = 2u * kq + vdim;
     const uint32_t in_dim = ch + 2u * mc->lin_v_heads;
     const uint32_t kvh = mc->lin_v_heads / mc->lin_k_heads;
-    dim3 grid(mc->lin_v_heads), block(1);
+    dim3 grid(mc->lin_v_heads);
+    dim3 block(1);
 
     if (!op->a || !op->b || !op->c)
         return MM_ERR_STATE;
@@ -908,8 +920,8 @@ static uint32_t kx_sample_row_host(const uint16_t *logits, uint32_t V,
         }
         return best;
     }
-    float *tmp = malloc((size_t)V * sizeof *tmp);
-    uint32_t *order = malloc((size_t)V * sizeof *order);
+    float *tmp = (float *)malloc((size_t)V * sizeof *tmp);
+    uint32_t *order = (uint32_t *)malloc((size_t)V * sizeof *order);
     if (!tmp || !order) {
         free(tmp);
         free(order);
@@ -982,7 +994,8 @@ mm_status kx_op_sample(const mm_kcall *kc)
         return MM_ERR_STATE;
 
     if (h->temperature <= 0.0f || h->top_k == 0) {
-        dim3 grid(M), block(1);
+        dim3 grid(M);
+        dim3 block(1);
         k_sample_greedy<<<grid, block, 0, kx_st()>>>(logits, toks, M, V);
         return kx_sync();
     }
@@ -990,8 +1003,8 @@ mm_status kx_op_sample(const mm_kcall *kc)
     /* Non-greedy: stage the logit rows to the host, run the reference
      * algorithm there (bit-exact with the CPU path), stage the tokens
      * back. See the function header above. */
-    uint16_t *hl = malloc((size_t)M * V * 2);
-    uint32_t *ht = malloc((size_t)M * 4);
+    uint16_t *hl = (uint16_t *)malloc((size_t)M * V * 2);
+    uint32_t *ht = (uint32_t *)malloc((size_t)M * 4);
     uint32_t m;
     if (!hl || !ht) {
         free(hl);

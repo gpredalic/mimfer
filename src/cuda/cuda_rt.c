@@ -17,6 +17,20 @@ static cudaEvent_t g_ev[MM_N_EVENTS];
 static int         g_inited;
 static int         g_capturing;   /* compute stream in capture mode */
 
+/* Check a CUDA call: log and fail fast. Defined before its first use:
+ * this file once had it below mm_cuda_device_count(), where the CK()
+ * there compiled as an implicit int function call and the check was a
+ * silent no-op. */
+#define CK(call)                                                        \
+    do {                                                                \
+        cudaError_t _e = (call);                                        \
+        if (_e != cudaSuccess) {                                        \
+            MM_LOGE("cuda: %s (line %d): %s", #call, __LINE__,          \
+                    cudaGetErrorString(_e));                            \
+            return MM_ERR_CUDA;                                         \
+        }                                                               \
+    } while (0)
+
 int mm_cuda_enabled(void)
 {
     return 1;
@@ -34,16 +48,6 @@ cudaStream_t mm_cuda_stream_raw(mm_stream_id id)
 {
     return g_st[id];
 }
-
-#define CK(call)                                                        \
-    do {                                                                \
-        cudaError_t _e = (call);                                        \
-        if (_e != cudaSuccess) {                                        \
-            MM_LOGE("cuda: %s (line %d): %s", #call, __LINE__,          \
-                    cudaGetErrorString(_e));                            \
-            return MM_ERR_CUDA;                                         \
-        }                                                               \
-    } while (0)
 
 mm_status mm_cuda_init(int device_ordinal)
 {
@@ -156,26 +160,25 @@ mm_status mm_graph_capture_begin(mm_graph *g)
 }
 
 /* Apply an L2 access-policy window to one kernel node. */
-static cudaError_t set_node_window(cudaGraph_t graph, cudaGraphNode_t node,
+static cudaError_t set_node_window(cudaGraphNode_t node,
                                    const void *base, size_t bytes,
                                    int hit_pct)
 {
-    cudaKernelNodeParams p;
-    cudaLaunchAttribute attrs[1];
-    cudaError_t e;
+    cudaLaunchAttributeValue v;
 
-    e = cudaGraphGetKernelNodeParams(graph, node, &p);
-    if (e != cudaSuccess)
-        return e;
-    attrs[0].id = cudaLaunchAttributeAccessPolicyWindow;
-    attrs[0].val.accessPolicyWindow.base_ptr = (void *)base;
-    attrs[0].val.accessPolicyWindow.num_bytes = bytes;
-    attrs[0].val.accessPolicyWindow.hitRatio = (float)hit_pct / 100.0f;
-    attrs[0].val.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
-    attrs[0].val.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
-    p.extra = attrs;
-    p.numAttrs = 1;
-    return cudaGraphSetKernelNodeParams(graph, node, &p);
+    v.accessPolicyWindow.base_ptr = (void *)base;
+    v.accessPolicyWindow.num_bytes = bytes;
+    v.accessPolicyWindow.hitRatio = (float)hit_pct / 100.0f;
+    v.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
+    v.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
+    /* Per-node launch attributes are set through the attribute API:
+     * cudaKernelNodeParams carries no attribute array (its `extra` field
+     * is the packed-kernel-params buffer, not cudaLaunchAttribute). The
+     * earlier numAttrs/extra form was written against an API that never
+     * existed. */
+    return cudaGraphKernelNodeSetAttribute(node,
+                                           cudaLaunchAttributeAccessPolicyWindow,
+                                           &v);
 }
 
 mm_status mm_graph_set_node_window(mm_graph *g, const void *base,
@@ -227,11 +230,11 @@ mm_status mm_graph_commit(mm_graph *g, const void *window_base,
         CK(cudaGraphGetNodes(graph, nodes, &n));
         if (use_window) {
             for (size_t i = 0; i < n; i++) {
-                cudaGraphNodeType t;
-                if (cudaGraphNodeType(nodes[i], &t) != cudaSuccess)
+                enum cudaGraphNodeType t;
+                if (cudaGraphNodeGetType(nodes[i], &t) != cudaSuccess)
                     continue;
                 if (t == cudaGraphNodeTypeKernel) {
-                    if (set_node_window(graph, nodes[i], g->win_base,
+                    if (set_node_window(nodes[i], g->win_base,
                                         g->win_bytes, g->win_pct)
                         != cudaSuccess)
                         MM_LOGW("cuda: node window rejected on node %zu "

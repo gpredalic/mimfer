@@ -27,6 +27,11 @@
  * Host memory (token buffers, prefix registry, artifact TOC) uses plain
  * calloc/free — it is tiny (< 256 MiB worst case) and off the hot path.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef MIMFER_ALLOC_H
 #define MIMFER_ALLOC_H
 
@@ -93,3 +98,6 @@ mm_status mm_arena_reset(mm_arena *a);
 int mm_arena_dump(const mm_arena *a, char *buf, size_t n);
 
 #endif /* MIMFER_ALLOC_H */
+#ifdef __cplusplus
+}
+#endif

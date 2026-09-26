@@ -11,10 +11,12 @@
 - **Host (CPU) reference: release-ready.** Planner, CPU kernels, engine,
   KV pool, scheduler, sampling — all implemented and verified (unit +
   smoke + ASan/UBSan), deterministic across runs.
-- **GPU path: code-complete, not hardware-verified.** `src/cuda/` and
-  `src/kernels/cuda/cx.cu` have never been compiled with nvcc or executed
-  on silicon. No GPU claim may be made until
-  `VALIDATION_CHECKLIST.md` passes on real hardware.
+- **GPU path: code-complete and now build-verified, not hardware-verified.**
+  `src/cuda/` and `src/kernels/cuda/cx.cu` compile and link against the real
+  CUDA 13.1 toolkit (nvcc 13.1.115, driverless build via toolkit link stubs —
+  2026-09-26, Makefile and CMake) but have not been **executed on silicon**.
+  No GPU claim may be made until `VALIDATION_CHECKLIST.md` passes on real
+  hardware.
 - **Known deferred scope** (by design, documented in-tree): artifact
   loading, tokenizer, telemetry, FP8 KV, MTP draft — written or declared,
   not integrated (§3).
@@ -59,7 +61,7 @@
 
 | # | Risk | Likelihood / impact | Mitigation / status |
 |---|------|--------------------|---------------------|
-| R1 | **`cx.cu` has never been compiled.** First nvcc run may surface C++/CUDA-specific compile errors in the only uncompiled TU. | Medium / blocks everything downstream | Isolated by build order in `GPU_VALIDATION.md`; all 14 other TUs are verified. Failure mode is a build error, not silent misbehavior. |
+| R1 | **First real-toolkit compile is done, first silicon run is not.** `cx.cu` + the full GPU link set now compile and link clean under nvcc 13.1.115 (driverless, 2026-09-26); what remains is execution on a GPU with the driver — first-run issues are now runtime-layer (launch, graph capture, device attributes), not compile-layer. | Medium / blocks everything downstream | Isolated by build order in `GPU_VALIDATION.md`; the 14 other TUs plus `cx.cu` are build-verified. |
 | R2 | First-run driver/toolkit interaction: launch attributes on graph nodes, thread-local stream capture, L2 access-policy windows on the real 12.8/13.x driver. | Low-Medium | L2 window node rejection is soft by design (warning, continue); capture is a single documented path (greedy, at load). Any capture error is treated as a real bug (§9.2 of the runbook). |
 | R3 | **Golden is compiler/machine-dependent** (FP behavior of the host compiler that wrote it). A golden built on one machine can mismatch another's CPU reference. | Medium / would corrupt attribution of parity failures | Oracle pre-gate: `par_selfcheck` must pass on the validating machine before any GPU comparison; golden rebuild rule documented (`GPU_VALIDATION.md` §5.3). |
 | R4 | Device-profile fields marked **ESTIMATE** (bandwidth 672 GB/s, L2 96 MiB, smem 100 KiB) — the derived-bandwidth check (±10%) can gate the *real* PRO 4000 if driver-reported clocks/bus differ. | Medium on the target card | Probed values logged at startup; `MIMFER_SOFT_DEVICE_GATE` bypass; the report template captures the probed line. |

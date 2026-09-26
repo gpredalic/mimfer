@@ -74,7 +74,7 @@ of the public include order but nothing it includes points back).
 | `src/engine/engine.c` | 670 | engine (load/decode/feature gates) | ENG, GPU | largest TU; includes the 12-header hub `engine.h` + private `tensor_registry.h` + `cuda_mem.h` |
 | `src/kernels/kx.c` | 47 | dispatcher (`mm_kx_invoke` switch) | ENG, GPU | calls `kx_op_*` (defined by `cpu/cx.c` or `cuda/cx.cu` per build) |
 | `src/kernels/cpu/cx.c` | 490 | CPU reference kernels (18 `kx_op_*`) | ENG (host only) | golden reference; excluded from GPU set |
-| `src/kernels/cuda/cx.cu` | 1042 | CUDA kernel launch set (18 `kx_op_*` + `kx_cuda_oppref`) | GPU only (nvcc, no `-x c`) | the only C++/CUDA TU; never compiled yet (B8); **B1 fix** ensures it is on the nvcc link line |
+| `src/kernels/cuda/cx.cu` | 1042 | CUDA kernel launch set (18 `kx_op_*` + `kx_cuda_oppref`) | GPU only (nvcc, by extension — **no `-x`**) | the only C++/CUDA TU; **now compiles + links clean on nvcc 13.1.115 (driverless, 2026-09-26)**; **B1 fix** ensures it is on the nvcc link line |
 | `src/model/tensor_registry.c` | 238 | tensor registry impl | ENG, GPU | |
 | `src/artifact/artifact.c` | 448 | artifact V2/V3 loader | **none** (B2) | `-fsyntax-only` clean under release flags |
 | `src/tokenizer/tokenizer.c` | 285 | tokenizer | **none** (B2) | same |
@@ -99,8 +99,8 @@ In-tree private headers (not under `include/`; reachable via
 | `tests/host/engine_features_test.c` | 232 | `build/engine_features` (`ENGINE_SRCS`) | e2e YaRN q-buffer difference vs plain (plain byte-identical), `--spec`/`--vision` refusals; part of `make test` |
 | `tests/host/par_golden.c` | 449 | `build/par_golden` (`ENGINE_SRCS`) | golden writer (1 prefill + 16 decode, seed 12345) |
 | `tests/host/par_selfcheck.c` | 19 | `build/par_selfcheck` (`ENGINE_SRCS`) | thin wrapper that `#include`s `../cuda/parity_test.c` (one comparator source of truth); part of `make test` |
-| `tests/cuda/parity_test.c` | 805 | `build/parity_test` (GPU set, nvcc `-x c`; also `#include`d by `par_selfcheck.c`) | per-op GPU↔golden parity, 18 opcodes, 3 tolerance classes; dual-buildable (host self-check + GPU); carries the `MM_WITH_CUDA`-guarded `kx_cpu_oppref` reference copy for the GPU link (B10) |
-| `tests/cuda/gpu_smoke.c` | 227 | `build/gpu_smoke` (GPU set, nvcc `-x c`) | end-to-end GPU: graph vs direct, determinism, CPU-oracle token heads; `#error` without `MM_WITH_CUDA` |
+| `tests/cuda/parity_test.c` | 805 | `build/parity_test` (GPU set, nvcc, by extension; also `#include`d by `par_selfcheck.c`) | per-op GPU↔golden parity, 18 opcodes, 3 tolerance classes; dual-buildable (host self-check + GPU); carries the `MM_WITH_CUDA`-guarded `kx_cpu_oppref` reference copy for the GPU link (B10) |
+| `tests/cuda/gpu_smoke.c` | 227 | `build/gpu_smoke` (GPU set, nvcc, by extension) | end-to-end GPU: graph vs direct, determinism, CPU-oracle token heads; `#error` without `MM_WITH_CUDA` |
 
 ## 5. Untracked / ignored
 
