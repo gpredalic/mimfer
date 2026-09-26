@@ -1,0 +1,151 @@
+# .clinerules — mandatory development rules for mimfer
+
+These are project governance rules. They are binding for every session and
+every change. A human may override a rule only with an explicit instruction.
+
+## 1. Memory rules
+
+### At the beginning of every session
+
+1. Read `READ_MEMORY.md` completely.
+2. Treat `READ_MEMORY.md` as authoritative.
+3. Verify repository state matches memory.
+4. Continue from the NEXT TASK.
+5. Do not rediscover completed modules.
+
+Never start implementation before reading `READ_MEMORY.md`.
+
+### Before ending a session
+
+1. Update `READ_MEMORY.md`.
+2. Update the status board.
+3. Update completed work.
+4. Update tests.
+5. Update next priority.
+6. Update session handoff.
+
+No session may end without updating `READ_MEMORY.md`.
+
+## 2. Branch rules
+
+Branch strategy:
+
+    main            Production-ready code only.
+    develop         Integration branch.
+    feature/*       Individual features.
+    bugfix/*        Individual fixes.
+    experimental/*  Research and temporary work.
+
+Rules:
+
+- Never commit directly to `main` unless explicitly instructed.
+- New work should start on feature branches.
+- Merge into `develop` first.
+- Merge into `main` only after verification.
+- Never force push.
+- Never rewrite shared history.
+- Never delete branches without explicit instruction.
+
+## 3. Architecture rules
+
+- Do not redesign architecture without explicit approval.
+- Preserve separation of:
+  - planner
+  - engine
+  - tensor registry
+  - dispatcher
+  - kernels
+  - artifact system
+- Do not move responsibilities between modules.
+- Do not introduce framework-style abstractions.
+- Keep the codebase understandable by a single engineer.
+
+## 4. Project scope rules
+
+Current supported hardware:
+
+- NVIDIA RTX PRO 4000 Blackwell
+
+Current supported models:
+
+- MirkoCovizzi/Qwen3.8-27B-QUASAR-NVFP4-NInfer
+- Neroued/Qwen3.8-27B-nvfp4-NInfer
+
+Current supported artifacts:
+
+- NInfer Artifact V2
+- NInfer Artifact V3
+
+Do not advertise support for additional GPUs, model families, or artifact
+formats unless they are actually implemented and validated.
+
+## 5. CUDA rules
+
+The CPU path is the golden reference.
+
+Before any optimization:
+
+    CPU result must equal CUDA result
+
+Order of work:
+
+1. Correctness first.
+2. Parity second.
+3. Optimization third.
+
+Never implement performance optimizations before validation exists.
+
+## 6. Code quality rules
+
+All code must:
+
+- compile clean with `-Wall -Wextra -Werror`
+- avoid global mutable state
+- avoid hidden ownership
+- avoid dead code
+- avoid unused abstractions
+- be testable from the host side whenever possible
+
+Document all important decisions.
+
+## 7. Documentation rules
+
+Keep updated:
+
+- `README.md`
+- `READ_MEMORY.md`
+- `GPU_VALIDATION.md`
+- `VALIDATION_CHECKLIST.md`
+- `RELEASE_READINESS.md`
+
+Documentation must reflect actual implementation status. Do not document
+unimplemented features as complete.
+
+## 8. Engineering philosophy
+
+Mimfer is:
+
+- modular
+- deterministic
+- maintainable
+- understandable
+
+Inspired by:
+
+- the Ninfer ecosystem
+- the suckless philosophy
+
+Mimfer is NOT:
+
+- a fork
+- a giant framework
+- a generic inference platform
+
+Favor:
+
+- small modules
+- explicit design
+- low complexity
+- clean interfaces
+
+When in doubt: choose the simpler solution.

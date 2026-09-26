@@ -1,0 +1,91 @@
+# mimfer .gitignore
+#
+# Goal: keep the repository clean. Generated files, build outputs, temporary
+# files, editor metadata, CUDA artifacts, test outputs and local machine
+# state must never be committed.
+#
+# Deliberately NOT ignored (project files, must stay versioned):
+#   README.md, READ_MEMORY.md, GPU_VALIDATION.md, VALIDATION_CHECKLIST.md,
+#   RELEASE_READINESS.md, .clinerules, all source, headers, tests and docs.
+
+# Build outputs
+build/
+dist/
+out/
+bin/
+obj/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Ninja
+.ninja*
+build.ninja
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.log
+test
+
+# Coverage
+*.gcda
+*.gcno
+*.gcov
+coverage/
+lcov.info
+
+# Sanitizers
+asan.log*
+ubsan.log*
+lsan.log*
+
+# Test outputs
+test-output/
+test-results/
+*.profraw
+*.profdata
+
+# Golden / generated parity files
+/tmp/par_golden.bin
+par_golden.bin
+*.golden
+
+# CUDA
+*.cubin
+*.fatbin
+*.ptx
+*.nvvp
+*.nsys-rep
+*.qdrep
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python tooling (if used for helper scripts)
+__pycache__/
+*.pyc
+*.pyo
+
+# Local project state
+.env
+.env.local
