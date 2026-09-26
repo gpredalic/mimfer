@@ -123,8 +123,7 @@ Examples of what this is meant to cover:
 In most cases that should require:
 
 - a small self-contained module,
-- registration in the build (single-line `gcc`/`nvcc` commands — there is no
-  Makefile or CMake to keep in sync),
+- registration in the build (one source entry in the root `Makefile`),
 - a minimal integration point in the runtime.
 
 The goal is that a developer can add a feature by introducing focused code
@@ -146,6 +145,9 @@ system. What the codebase is trying to keep:
 | `GPU_VALIDATION.md` | Hardware validation runbook: exact build/run/test procedure for a real GPU |
 | `VALIDATION_CHECKLIST.md` | Go/no-go checklist for the first GPU run |
 | `RELEASE_READINESS.md` | Completed vs. pending subsystems, risks, unverified assumptions |
+| `BUILD_AUDIT.md` | Final build audit (2026-09-26): findings B1–B10, conformance matrix, evidence |
+| `SOURCE_TREE.md` | Annotated inventory of every tracked file (role, size, build registration) |
+| `MODULE_DEPENDENCIES.md` | Per-TU include graph, module dependency map, `MM_WITH_CUDA` split |
 | `docs/dflash2.md` | Declared scope of the speculative-decoding surface (planned; scaffolding only) |
 
 **Build.** The canonical build system is the root `Makefile` (GNU Make

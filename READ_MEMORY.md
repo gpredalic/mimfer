@@ -4,12 +4,13 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-26 (session handoff: engine CLI feature surface —
-> RoPE tables module + YaRN, CLI flag grammar, weights profiles,
-> spec/vision feature gates; host tests `rope_test`/`flags_test`/
-> `engine_features_test` wired into `make test`; documentation synced —
-> README feature-surface section, `docs/dflash2.md` created, `src/rope/rope.c`
-> added to every documented gcc/nvcc link set)
+> **Last updated:** 2026-09-26 (session handoff: final build audit before
+> RTX PRO 4000 validation — full tree reviewed; two critical GPU-link
+> defects found and fixed (B1: `cx.cu` missing from the Makefile nvcc
+> link line; B10: no `kx_cpu_oppref` provider in the GPU `parity_test`
+> link set); new docs `BUILD_AUDIT.md`, `SOURCE_TREE.md`,
+> `MODULE_DEPENDENCIES.md`; host suite green after the changes;
+> README/RELEASE_READINESS synced)
 > **Project health:** GREEN
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
 > **GPU parity:** TOOLING COMPLETE, host self-check VERIFIED · **GPU execution:** PENDING (no nvcc/GPU on this host)
@@ -45,6 +46,7 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | README.md (project README: current model support, artifact support, hardware scope, extensibility) |
 | [COMPLETE] | Project governance: .clinerules (mandatory rules), .gitignore, git repo initialized (main) |
 | [COMPLETE] | Canonical build system: root Makefile (GNU Make only) — host + CUDA build rules, `make` / `make test` / `make cuda` / `make help` / `make clean` / `make distclean`; artifacts in `build/` |
+| [COMPLETE] | Final build audit (2026-09-26): `BUILD_AUDIT.md` (findings B1–B10, conformance matrix, evidence), `SOURCE_TREE.md` (annotated file inventory), `MODULE_DEPENDENCIES.md` (include graph + module map); two critical GPU-link defects fixed (B1, B10) |
 | [PENDING]  | GPU execution of parity + smoke tests (needs nvcc + a GPU) |
 | [PENDING]  | Blackwell Optimizations |
 
@@ -609,9 +611,10 @@ CUDA incrementally.
 | Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template; all link sets include `src/rope/rope.c`), VALIDATION_CHECKLIST.md (go/no-go; Gate 0 requires `make test` green), RELEASE_READINESS.md (status/risks/audit incl. the new feature rows), docs/dflash2.md (declared speculative-decoding scope); 2026-09-26 |
 | README | COMPLETE — README.md: Current Model Support (two NInfer Qwen3.8-27B reference models only), Current Artifact Support (NInfer Artifact V2/V3), Hardware Scope (RTX PRO 4000 Blackwell only; soft-gate is a testing affordance), **Engine & CLI Feature Surface** (flag-by-flag status table: wired / validated scaffolding / validated hook), Extensibility (suckless-inspired, architecture influence not code dependency); 2026-09-26 |
 | Feature surface | COMPLETE (host) — RoPE tables (`src/rope/rope.c`, plain + YaRN; plain bit-identical to legacy formula so the golden is unchanged), CLI flag grammar (`src/flags/flags.c`), weights profiles + `mm_engine_cfg_validate` cross-field rules (`src/config/`), `--spec`/`--vision` gates in `mm_engine_load`; tests: `rope_test`, `flags_test`, `engine_features_test` (e2e YaRN q-buffer difference vs plain, plain byte-identical, spec/vision refusals); declared speculative scope: docs/dflash2.md; 2026-09-26 |
-| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo initialized on main (no commits yet); 2026-09-26 |
-| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26 |
+| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (branch name is a historical artifact — no CMake exists in the tree, see BUILD_AUDIT.md B4); 2026-09-26 |
+| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; host build is hermetic (no CUDA toolkit needed; `cuda_runtime.h` absent on this host, suite green) |
+| Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
 | GPU execution | PENDING — no nvcc/GPU on this host; on a GPU machine: `make golden && make parity-selfcheck && make cuda`, then run the printed commands (GPU_VALIDATION.md §4–§8) |
 | Recommended next step | Human validation on a GPU machine: GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md (now drivable via `make` targets, §4.7) |
-| Audit findings | RELEASE_READINESS.md §7: zero TODO/FIXME markers; artifact/tokenizer/telemetry written but unintegrated; 6.4 GB tmux logs at repo root (junk); docs/architecture.md + docs/design.md referenced but absent; docs/dflash2.md was referenced by flags.h/config.h/engine.c and is now created (2026-09-26); documented gcc/nvcc recipes in READ_MEMORY.md §4 + GPU_VALIDATION.md §5–§7 all include src/rope/rope.c |
-| Risk | cx.cu has never been compiled (no nvcc here); first GPU run may surface .cu-specific compile issues — everything around it is verified; failures are isolated by the runbook's build order and are reportable per the template |
+| Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry written but unintegrated — all three pass `-fsyntax-only` under the exact release flags (not latent breakage); **no missing headers, no dead sources** (every TU registered, or the 3 above); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
+| Risk | cx.cu has never been compiled (no nvcc here); first GPU run may surface .cu-specific compile issues — everything around it is verified; the two guaranteed GPU-link failure modes (B1, B10) are fixed and command-line-verified via `make -n`; remaining failures would be isolated by the runbook's build order and reportable per the template |
