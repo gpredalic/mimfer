@@ -29,9 +29,12 @@
 | RAM | ≥ 2 GiB free | All tests use a tiny 8-layer built-in model (§3.5); allocations are single-digit MiB. |
 | Disk | < 50 MiB | Sources ~1 MB, `/tmp/par_golden.bin` 3.8 MB, four binaries. |
 
-**There is no build system** (no Makefile/CMake): every build is a single
-`gcc` or `nvcc` command, run from the repo root. **There are no external
-dependencies:** libc + libm + `cuda_runtime.h` only.
+**Build:** the canonical build system is the **root `Makefile`** (GNU Make
+only; `make` / `make test` / `make cuda`, artifacts in `build/`). Every
+build is still a single `gcc` or `nvcc` command — the Makefile recipes are
+the verbatim commands below (identical flags), so the manual form remains
+the reference. **There are no external dependencies:** libc + libm +
+`cuda_runtime.h` only.
 
 ## 2. What gets built and run
 
@@ -119,10 +122,12 @@ not a "RTX PRO 4000" card). If the card is not sm_120, fix the `-arch` in
 
 ### 5.1 Build and run the golden writer
 ```sh
-gcc -std=c11 -Wall -Wextra -Werror -Iinclude \
-    tests/host/par_golden.c src/plan/plan.c src/alloc/alloc.c \
-    src/config/config.c src/core/mimfer.c src/kv/kv.c \
-    src/sampling/sampling.c src/kernels/cpu/cx.c \
+gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
+    tests/host/par_golden.c src/engine/engine.c src/plan/plan.c \
+    src/alloc/alloc.c src/config/config.c src/core/mimfer.c \
+    src/cuda/cuda_rt.c src/cuda/cuda_mem.c src/sampling/sampling.c \
+    src/kv/kv.c src/kernels/cpu/cx.c src/kernels/kx.c \
+    src/model/tensor_registry.c src/rope/rope.c src/sched/sched.c \
     -lm -o /tmp/par_golden
 /tmp/par_golden /tmp/par_golden.bin
 ```
@@ -143,7 +148,7 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
     src/alloc/alloc.c src/config/config.c src/core/mimfer.c \
     src/cuda/cuda_rt.c src/cuda/cuda_mem.c src/sampling/sampling.c \
     src/kv/kv.c src/kernels/kx.c src/kernels/cpu/cx.c \
-    src/model/tensor_registry.c src/sched/sched.c \
+    src/model/tensor_registry.c src/rope/rope.c src/sched/sched.c \
     -lm -o /tmp/par_selfcheck
 /tmp/par_selfcheck /tmp/par_golden.bin
 ```
@@ -182,7 +187,8 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
      -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
      -x c src/kv/kv.c -x c src/kernels/kx.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/sched/sched.c \
+     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
+     -x c src/sched/sched.c \
      -o /tmp/parity_test
 ```
 ### 6.2 Run
@@ -231,7 +237,8 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
      -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
      -x c src/kv/kv.c -x c src/kernels/kx.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/sched/sched.c \
+     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
+     -x c src/sched/sched.c \
      -o /tmp/gpu_smoke
 ```
 ### 7.2 Run

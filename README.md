@@ -80,6 +80,28 @@ environment variable (`MIMFER_SOFT_DEVICE_GATE`) allows starting on other
 NVIDIA GPUs for validation work — that is a testing affordance, not a support
 statement.
 
+## Engine & CLI Feature Surface
+
+The server's flag surface (`src/flags/flags.c`, `include/mimfer/flags.h`)
+owns one grammar table: every flag is parsed, range-checked, listed in
+`--help`, and either changes engine behavior or fails with an explicit
+error. Cross-field rules (`--spec` vs `--draft-tokens` vs `--lm-head-draft`,
+the YaRN factor) are enforced once, in `mm_engine_cfg_validate`
+(`src/config/config.c`).
+
+| Flags | Status |
+|-------|--------|
+| `--artifact`, `--max-ctx`, `--kv-capacity`, `--kv-dtype`, `--concurrency`, `--chunk`, `--temperature`, `--top-k`, `--top-p`, `--seed`, `--verbose`, `--no-graph` | wired — parsed, validated, and consumed by the engine config |
+| `--weights-profile quasar\|neroued` | wired — the two reference-checkpoint profiles (the models above): applies the artifact's context defaults (max ctx / chunk) unless the user is explicit; carries the DFlash2 draft-window ceiling and MTP layer metadata per artifact |
+| `--rope-yarn` (+ `--rope-yarn-factor`, `--rope-yarn-ctx`) | wired — YaRN (NTK-by-parts) RoPE scaling: one frequency table + attention scale built at startup (`src/rope/rope.c`), consumed by both the CPU and CUDA RoPE kernels through the round control buffer. Without it, RoPE is bit-identical to the legacy per-kernel formula (golden unchanged) |
+| `--spec off\|mtp\|dflash2`, `--draft-tokens`, `--lm-head-draft` | validated scaffolding — parsed and cross-validated; non-off backends are **refused at engine start** with `MM_ERR_UNSUPPORTED` (the draft/verify loop is planned work: `docs/dflash2.md`) |
+| `--vision` | validated hook — enables the vision request path; image submission validates then returns an explicit `MM_ERR_UNSUPPORTED` until the pipeline lands |
+
+Test coverage: `tests/host/rope_test.c` (tables vs the reference formula),
+`tests/host/flags_test.c` (full grammar + cross-field rules),
+`tests/host/engine_features_test.c` (e2e YaRN table reach + engine-level
+refusals) — all part of `make test`.
+
 ## Extensibility
 
 The design is inspired by the simplicity philosophy of suckless software —
@@ -119,11 +141,16 @@ system. What the codebase is trying to keep:
 
 | File | What it is |
 |------|------------|
+| `README.md` | this file: project overview, supported models/artifacts/hardware, feature surface |
 | `READ_MEMORY.md` | Project state and architecture notes (read first when touching code) |
 | `GPU_VALIDATION.md` | Hardware validation runbook: exact build/run/test procedure for a real GPU |
 | `VALIDATION_CHECKLIST.md` | Go/no-go checklist for the first GPU run |
 | `RELEASE_READINESS.md` | Completed vs. pending subsystems, risks, unverified assumptions |
+| `docs/dflash2.md` | Declared scope of the speculative-decoding surface (planned; scaffolding only) |
 
-There is no build system: every build is a single `gcc` or `nvcc` command
-run from the repository root (commands, flags, and expected outputs are in
-`GPU_VALIDATION.md`).
+**Build.** The canonical build system is the root `Makefile` (GNU Make
+only — no CMake/Meson/Bazel, no generated files): `make` builds all host
+targets into `build/`, `make test` runs the full host suite sequentially,
+`make cuda` builds the GPU test binaries. Every target is still a single
+`gcc` or `nvcc` command (identical flags to the verbatim commands in
+`GPU_VALIDATION.md`); artifacts land in `build/` and are git-ignored.

@@ -38,6 +38,11 @@ extern "C" {
 /* Opaque stream handle: cudaStream_t in GPU builds, ignored in host. */
 typedef void *mm_stream_h;
 
+/* Effective RoPE inverse-frequency table capacity: rope_dim/2 pairs,
+ * bounded well above the model's 32 (Qwen3.8-27B partial RoPE, rope_dim
+ * 64) for any future model in this appliance line. */
+#define MM_MAX_ROPE_PAIRS 128
+
 typedef struct mm_ctrl {
     /* prefill / verify: the token ids of this chunk (M = n used) */
     uint32_t toks[MM_MAX_PREFILL_CH];
@@ -54,6 +59,15 @@ typedef struct mm_ctrl {
     uint32_t top_k;
     float    top_p;
     uint64_t u;         /* one uniform [0,1) as fixed-point 1.31        */
+    /* RoPE effective table (rope.h): filled at load and re-copied after
+     * every round's ctrl reset. rope_inv[p] is the effective inverse
+     * frequency of pair p (plain RoPE: powf(1/theta, 2p/rd), bit-exact
+     * with the legacy per-kernel formula; YaRN: the NTK-by-parts blend);
+     * rope_mscale scales the rotated q/k components (plain 1.0; YaRN
+     * 0.1*ln(factor)+1, the paper's attention temperature folded into
+     * the rotary embedding). */
+    float    rope_inv[MM_MAX_ROPE_PAIRS];
+    float    rope_mscale;
 } mm_ctrl;
 
 typedef struct mm_kcall {

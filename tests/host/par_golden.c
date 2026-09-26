@@ -311,6 +311,7 @@ static mm_status par_prefill(FILE *f, mm_engine *e, const mm_plan *plan,
     e->ctrl.kv_len = plen;
     e->ctrl.n_slots = 0;
     set_sampling(e);
+    mm_rope_fill_ctrl(&e->rope, &e->ctrl);
 
     MM_CHECK(ensure_blocks(e, 0, plen));
     s = run_plan(f, e, plan, 0, "prefill");
@@ -337,6 +338,7 @@ static mm_status par_decode(FILE *f, mm_engine *e, const mm_plan *plan,
     e->ctrl.slot_pos[0] = pos;
     e->ctrl.slot_len[0] = pos + 1;
     set_sampling(e);
+    mm_rope_fill_ctrl(&e->rope, &e->ctrl);
 
     MM_CHECK(ensure_blocks(e, pos, pos + 1));
     s = run_plan(f, e, plan, round_id, "decode");
@@ -376,7 +378,7 @@ int main(int argc, char **argv)
     mm_status s;
     FILE *f;
 
-    memset(&cfg, 0, sizeof cfg);
+    mm_engine_cfg_default(&cfg);   /* canonical defaults, then overrides */
     cfg.max_ctx = PAR_MAXCTX;
     cfg.kv_capacity = 0;
     cfg.kv_dtype = MM_KV_BF16;

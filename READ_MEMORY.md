@@ -4,13 +4,17 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-26 (session handoff: external validation pack + README.md
-> complete — GPU_VALIDATION.md + VALIDATION_CHECKLIST.md + RELEASE_READINESS.md
-> + README.md; GPU execution pending)
+> **Last updated:** 2026-09-26 (session handoff: engine CLI feature surface —
+> RoPE tables module + YaRN, CLI flag grammar, weights profiles,
+> spec/vision feature gates; host tests `rope_test`/`flags_test`/
+> `engine_features_test` wired into `make test`; documentation synced —
+> README feature-surface section, `docs/dflash2.md` created, `src/rope/rope.c`
+> added to every documented gcc/nvcc link set)
 > **Project health:** GREEN
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
 > **GPU parity:** TOOLING COMPLETE, host self-check VERIFIED · **GPU execution:** PENDING (no nvcc/GPU on this host)
 > **External validation pack:** COMPLETE (GPU_VALIDATION.md runbook, VALIDATION_CHECKLIST.md go/no-go, RELEASE_READINESS.md status/risks)
+> **Build system:** COMPLETE — GNU Make only (Makefile at repo root); `make` / `make test` verified end-to-end
 
 ---
 
@@ -31,10 +35,16 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | CUDA Runtime Integration |
 | [COMPLETE] | CUDA Kernels (written, parity-first; pending GPU verification) |
 | [COMPLETE] | CPU/CUDA parity tooling (golden writer + parity test + self-check) |
+| [COMPLETE] | RoPE frequency tables (plain + YaRN NTK-by-parts) — `src/rope/rope.c` |
+| [COMPLETE] | CLI flag surface (one grammar table + cross-field validation) — `src/flags/flags.c` |
+| [COMPLETE] | Weights profiles (quasar / neroued context defaults + artifact metadata) |
+| [COMPLETE] | Engine feature gates: `--spec` refusal, `--vision` hook, `--weights-profile` |
+| [COMPLETE] | Engine feature test harness (`engine_features_test.c`: YaRN e2e + refusals) |
 | [COMPLETE] | End-to-end GPU smoke test (written; pending GPU execution) |
 | [COMPLETE] | External validation pack: GPU_VALIDATION.md (runbook), VALIDATION_CHECKLIST.md (go/no-go), RELEASE_READINESS.md (status/risks/audit) |
 | [COMPLETE] | README.md (project README: current model support, artifact support, hardware scope, extensibility) |
 | [COMPLETE] | Project governance: .clinerules (mandatory rules), .gitignore, git repo initialized (main) |
+| [COMPLETE] | Canonical build system: root Makefile (GNU Make only) — host + CUDA build rules, `make` / `make test` / `make cuda` / `make help` / `make clean` / `make distclean`; artifacts in `build/` |
 | [PENDING]  | GPU execution of parity + smoke tests (needs nvcc + a GPU) |
 | [PENDING]  | Blackwell Optimizations |
 
@@ -82,31 +92,56 @@ load model
 ```
 include/mimfer/   public headers (engine.h, plan.h, kernels.h, kv.h, cuda_rt.h,
                   tensor.h, sched.h, sampling.h, config.h, alloc.h, artifact.h,
-                  telemetry.h, tokenizer.h, mimfer.h)
-src/engine/       engine.c          — runtime orchestration (create/load/step)
+                  telemetry.h, tokenizer.h, mimfer.h, rope.h, flags.h)
+src/engine/       engine.c          — runtime orchestration (create/load/step;
+                                      spec-backend + vision feature gates)
 src/plan/         plan.c            — planner (isolated; owns op-graph + activation planning)
 src/kernels/      kx.c, kx.h        — kernel dispatcher (mm_kx_invoke)
-src/kernels/cpu/  cx.c              — CPU reference kernels
+src/kernels/cpu/  cx.c              — CPU reference kernels (RoPE consumes the
+                                      engine's frequency table via the control buffer)
 src/model/        tensor_registry.c/.h — tensor registry (NOT part of planner)
 src/kv/           kv.c              — KV block pool (block IDs are 1..n_blocks)
 src/sched/        sched.c           — request scheduler (submit/active/queued)
 src/sampling/     sampling.c        — sampling
 src/alloc/        alloc.c           — arena allocator (mm_arena_init_host, ...)
-src/config/       config.c          — model cfg finalize
+src/config/       config.c          — model cfg finalize, engine cfg validation
+                                      (cross-field flag rules), weights profiles
+                                      (MM_PROFILES: quasar / neroued)
+src/rope/         rope.c            — RoPE frequency tables: plain + YaRN
+                                      (NTK-by-parts); plain is bit-identical to
+                                      the legacy per-kernel formula (golden-safe)
+src/flags/        flags.c           — CLI flag grammar (one table; --help;
+                                      explicit errors; no unknown-flag fallback)
 src/core/         mimfer.c          — core utilities
 src/cuda/         cuda_rt.c         — CUDA runtime layer (MM_WITH_CUDA guarded; host no-op stubs)
                   cuda_mem.c        — device arenas + pinned host I/O block (MM_WITH_CUDA)
 src/kernels/cuda/ cx.cu             — GPU kernel launch set (nvcc, -DMM_WITH_CUDA, -fmad=false)
-tests/host/       plan_test.c, engine_smoke.c, par_golden.c (golden writer)
-tests/cuda/       parity_test.c (GPU comparator; host self-check build),
-                  gpu_smoke.c (end-to-end GPU smoke test)
+src/artifact/     artifact.c        — .mimfer artifact loading (written; NOT integrated — see RELEASE_READINESS.md §3)
+src/tokenizer/    tokenizer.c       — written; NOT integrated (same status)
+src/telemetry/    telemetry.c       — written; NOT integrated (same status)
+Makefile              canonical GNU Make build system (host + CUDA, artifacts in build/)
+docs/             dflash2.md        — declared scope of the speculative-decoding
+                                      surface (planned; scaffolding only)
+tests/host/       plan_test.c, engine_smoke.c, rope_test.c (RoPE tables vs reference
+                  formula), flags_test.c (full CLI grammar + cross-field rules),
+                  engine_features_test.c (e2e YaRN table reach + spec/vision
+                  refusals), par_golden.c (golden writer), par_selfcheck.c (thin
+                  wrapper: #includes tests/cuda/parity_test.c, one shared
+                  comparator for the host self-check)
+tests/cuda/       parity_test.c (GPU comparator; host self-check build via the
+                  wrapper above), gpu_smoke.c (end-to-end GPU smoke test)
 ```
 
 ---
 ## 4. Verified Build Commands (KNOWN-GOOD)
 
-Both commands re-verified **2026-09-25** from the project root
+The commands below are re-verified from the project root
 (`/home/razvijalec/mimfer`): clean compile under `-Werror`, tests pass.
+**Every engine-linked build (host or CUDA) includes `src/rope/rope.c`** —
+`src/engine/engine.c` calls `mm_rope_init`/`mm_rope_fill_ctrl`, so a link
+set without the RoPE module fails with undefined references. The canonical
+way to build is the root `Makefile` (§4.7); the manual commands are the
+reference recipes with identical flags.
 
 ### 4.1 plan_test — KNOWN-GOOD BUILD
 
@@ -129,7 +164,8 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
     src/engine/engine.c src/plan/plan.c src/alloc/alloc.c \
     src/config/config.c src/core/mimfer.c src/cuda/cuda_rt.c \
     src/sampling/sampling.c src/kv/kv.c src/kernels/cpu/cx.c \
-    src/kernels/kx.c src/model/tensor_registry.c src/sched/sched.c \
+    src/kernels/kx.c src/model/tensor_registry.c src/rope/rope.c \
+    src/sched/sched.c \
     -lm -o /tmp/engine_smoke
 /tmp/engine_smoke
 ```
@@ -155,7 +191,8 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
     src/engine/engine.c src/plan/plan.c src/alloc/alloc.c \
     src/config/config.c src/core/mimfer.c src/cuda/cuda_rt.c \
     src/sampling/sampling.c src/kv/kv.c src/kernels/cpu/cx.c \
-    src/kernels/kx.c src/model/tensor_registry.c src/sched/sched.c \
+    src/kernels/kx.c src/model/tensor_registry.c src/rope/rope.c \
+    src/sched/sched.c \
     -lm -o /tmp/engine_smoke_asan
 /tmp/engine_smoke_asan   # → clean, exit 0
 
@@ -176,7 +213,7 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
     src/alloc/alloc.c src/config/config.c src/core/mimfer.c \
     src/cuda/cuda_rt.c src/cuda/cuda_mem.c src/sampling/sampling.c \
     src/kv/kv.c src/kernels/cpu/cx.c src/kernels/kx.c \
-    src/model/tensor_registry.c src/sched/sched.c -lm \
+    src/model/tensor_registry.c src/rope/rope.c src/sched/sched.c -lm \
     -o /tmp/par_golden
 /tmp/par_golden /tmp/par_golden.bin
 ```
@@ -210,7 +247,7 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc/model -Isrc/kernels \
     src/alloc/alloc.c src/config/config.c src/core/mimfer.c \
     src/cuda/cuda_rt.c src/cuda/cuda_mem.c src/sampling/sampling.c \
     src/kv/kv.c src/kernels/cpu/cx.c src/kernels/kx.c \
-    src/model/tensor_registry.c src/sched/sched.c -lm \
+    src/model/tensor_registry.c src/rope/rope.c src/sched/sched.c -lm \
     -o /tmp/par_selfcheck
 /tmp/par_selfcheck /tmp/par_golden.bin
 ```
@@ -259,7 +296,8 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
      -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
      -x c src/kv/kv.c -x c src/kernels/kx.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/sched/sched.c \
+     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
+     -x c src/sched/sched.c \
      -o /tmp/parity_test
 /tmp/parity_test /tmp/par_golden.bin
 
@@ -273,7 +311,8 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
      -x c src/cuda/cuda_mem.c -x c src/sampling/sampling.c \
      -x c src/kv/kv.c -x c src/kernels/kx.c \
      src/kernels/cuda/cx.cu \
-     -x c src/model/tensor_registry.c -x c src/sched/sched.c \
+     -x c src/model/tensor_registry.c -x c src/rope/rope.c \
+     -x c src/sched/sched.c \
      -o /tmp/gpu_smoke
 /tmp/gpu_smoke
 ```
@@ -297,8 +336,57 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
   GPU SMOKE PASSED
   ```
 
+### 4.7 Canonical build: the root `Makefile` (GNU Make only, VERIFIED 2026-09-26)
+
+The `Makefile` at the repository root is the **canonical** build/validate
+system. No CMake/Meson/Bazel — one Makefile, plain variables, no generated
+files. All artifacts land in `build/` (git-ignored; the Makefile and
+`tests/` are explicitly NOT ignored).
+
+| Target | Effect |
+|--------|--------|
+| `make` (default) | build all host targets (same as `make host`) → `build/plan_test`, `build/engine_smoke`, `build/rope_test`, `build/flags_test`, `build/engine_features`, `build/par_golden`, `build/par_selfcheck` |
+| `make host` | same as default |
+| `make test` / `make tests` | run the host suite strictly sequentially (fail-fast): `plan-test` → `rope-test` → `flags-test` → `engine-smoke` → `engine-features` → `parity-selfcheck` (the last builds `par_golden`, writes `build/par_golden.bin`, then replays it) — unit tests first, engine smoke, feature gates, parity oracle gate last |
+| `make plan-test` / `make rope-test` / `make flags-test` / `make engine-smoke` / `make engine-features` / `make golden` / `make parity-selfcheck` | single test targets (aliases: `make parity` → parity-selfcheck, `make smoke` → engine-smoke) |
+| `make cuda` | build `build/parity_test` + `build/gpu_smoke` with nvcc (needs nvcc on PATH; prints a run command, never runs GPU tests) |
+| `make gpu-parity` / `make gpu-smoke` | CUDA build-only, with the run command printed |
+| `make check-nvcc` | nvcc presence probe (polite error if missing) |
+| `make help` | document every target |
+| `make clean` / `make distclean` | remove `build/` |
+
+- **Host flags are fixed by design** (`-std=c11 -Wall -Wextra -Werror`, no
+  optimizer flags): the CPU path is the golden reference and the golden's
+  bit-determinism is tied to this exact recipe (GPU_VALIDATION.md §3.4).
+- **GPU flags:** `nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=$(CUDA_ARCH)`,
+  `CUDA_ARCH ?= sm_120` (RTX PRO 4000 Blackwell). `-fmad=false` stays
+  mandatory until parity validation is complete (see §4.6 note).
+- `tests/host/par_selfcheck.c` is a **thin wrapper** that `#include`s
+  `tests/cuda/parity_test.c` (compiled without `-DMM_WITH_CUDA`) — one
+  source of truth for the comparator, no duplicated parity logic.
+- **Two GNU Make 4.3 traps found and fixed while building this (do not
+  reintroduce):**
+  1. A directory make-target used as an *order-only prerequisite*
+     (`target: prqs | $(BUILDDIR)` + `$(BUILDDIR): mkdir -p $@`): on the
+     first run after `make clean` (directory absent) make remakes the
+     directory prerequisite and then **silently skips the dependent file
+     targets** ("No need to remake target … is up to date" although the
+     file does not exist). Fix: each file recipe runs `mkdir -p $(@D)`
+     itself; no directory make-target exists.
+  2. The **default goal** was the first ordinary target in the file
+     (`build/plan_test`), so bare `make` built only that one binary. Fix:
+     `.DEFAULT_GOAL := all` pinned near the top of the Makefile.
+- Verified end-to-end on 2026-09-26 from a clean tree: `make` builds all
+  seven host binaries; `make test` → `PLAN TEST PASSED` + `ROPE TEST
+  PASSED` + `FLAGS TEST PASSED` + `ENGINE SMOKE PASSED` + `ENGINE FEATURES
+  PASSED` + `PAR GOLDEN WRITTEN build/par_golden.bin` + `PARITY PASSED`
+  (2009424 elements bit-exact) + `HOST TEST SUITE PASSED`; repeat `make`
+  is a no-op; `make cuda` without nvcc fails with an actionable message.
+- The manual `gcc`/`nvcc` commands in §4.1–§4.6 remain valid reference
+  builds (identical flags); the Makefile is what you run.
+
 ---
-## 5. Verified Tests (re-verified 2026-09-25)
+## 5. Verified Tests (re-verified 2026-09-25; feature surface re-verified 2026-09-26)
 
 ### plan_test — PASS
 
@@ -322,6 +410,47 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
   - multi-block path (per-slot block table beyond index 0)
   - tokens in valid range (vocab 512)
   - repeated runs identical
+
+### rope_test — PASS (RoPE frequency tables)
+
+- Plain tables are **bit-identical to the legacy per-kernel formula** for the
+  tiny shape (θ 1e7, dim 16) — this is what keeps the parity golden unchanged
+  when the RoPE kernels moved to the engine-owned table.
+- YaRN tables checked against the reference NTK-by-parts formula
+  (transformers v4.45.0) for a range of scale factors / original contexts;
+  the attention scale is `1 / sqrt(1 + ln(s)/2)` only when `s > 1`.
+- Unit-level only (no engine); the e2e reach of the table into the kernels is
+  proven by `engine_features_test` below.
+
+### flags_test — PASS (CLI flag surface)
+
+- Every flag in the grammar parses and reaches `mm_engine_cfg` (artifact,
+  context, KV, sampling, scheduling, rope, spec, vision, profile).
+- Malformed values (bad dtype names, out-of-range ints, `--rope-yarn-factor`
+  ≤ 1, `--draft-tokens` 0/9, `--spec` without `--draft-tokens`,
+  `--lm-head-draft` without `--spec`) are rejected with explicit errors —
+  the parser never silently falls back.
+- Cross-field rules via `mm_engine_cfg_validate`; `--weights-profile
+  quasar|neroued` lookup and unknown-profile rejection.
+- `--help` lists the full surface; `--version` prints the build string.
+
+### engine_features_test — PASS (engine feature gates, host)
+
+- **YaRN e2e reach:** one prefill round with a plain engine and one with a
+  YaRN engine (`rope_factor 2.0`) — the post-prefill `q` buffers **differ**
+  (the table demonstrably reaches the RoPE kernels in the forward pass),
+  while two plain engines are **byte-identical** (the golden path is
+  untouched). The buffers are compared *before* the plain engine is
+  destroyed (a previous version of this test used the plain engine's `q`
+  pointer after destroy — use-after-free; fixed).
+- **Spec gate:** `--spec mtp` and `--spec dflash2` are refused at
+  `mm_engine_load` with `MM_ERR_UNSUPPORTED` + an explicit "start with
+  --spec off" log; `--spec off` boots cleanly.
+- **Vision gate:** with `--vision`, image submission validates then returns
+  an explicit `MM_ERR_UNSUPPORTED` (hook only; no pipeline).
+- The 512-vocab toy model does not guarantee a sampled-token flip within 17
+  rounds when RoPE changes, so the e2e assertion is on the rotated `q`
+  buffer, not on the token stream.
 
 ### par_golden — PASS (golden writer)
 
@@ -408,6 +537,16 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA \
 ---
 ## 7. Next Priority
 
+**Completed 2026-09-26 (this session):** engine CLI feature surface —
+RoPE tables module (`src/rope/`), CLI flag grammar (`src/flags/`),
+weights profiles + cross-field validation (`src/config/`), spec/vision
+feature gates in `mm_engine_load` — with host tests `rope_test`,
+`flags_test`, `engine_features_test` wired into the `make test` suite
+(unit tests → engine smoke → feature gates → parity self-check), and all
+documentation synced (README feature-surface section, `docs/dflash2.md`
+created, `rope.c` added to every documented link set). Full host suite
+green from `make clean`.
+
 **NEXT TASK: external validation on a GPU machine** (this host has no nvcc /
 CUDA toolkit / GPU — the code is written, the tooling is verified on the
 host, the execution is what is missing). The process for the human
@@ -467,10 +606,12 @@ CUDA incrementally.
 | CUDA runtime + kernels | WRITTEN (runtime layer, device mem, cx.cu launch set; graph-capture-legal, round-boundary I/O wired) |
 | Parity tooling | COMPLETE + host-VERIFIED (par_golden golden writer; parity_test dual-buildable; self-check passes bit-exact) |
 | GPU smoke test | WRITTEN (gpu_smoke.c: graph vs direct, oracle heads, reproducible tokens) |
-| Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template), VALIDATION_CHECKLIST.md (go/no-go), RELEASE_READINESS.md (status/risks/audit); 2026-09-26 |
-| README | COMPLETE — README.md created: Current Model Support (two NInfer Qwen3.8-27B reference models only), Current Artifact Support (NInfer Artifact V2/V3), Hardware Scope (RTX PRO 4000 Blackwell only; soft-gate is a testing affordance), Extensibility (suckless-inspired, architecture influence not code dependency); 2026-09-26 |
-| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned), git repo initialized on main (no commits yet); 2026-09-26 |
-| GPU execution | PENDING — no nvcc/GPU on this host; run the GPU_VALIDATION.md procedure on a GPU machine |
-| Recommended next step | Human validation on a GPU machine: GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md |
-| Audit findings | RELEASE_READINESS.md §7: zero TODO/FIXME markers; artifact/tokenizer/telemetry written but unintegrated; 6.4 GB tmux logs at repo root (junk); docs/architecture.md + docs/design.md referenced but absent |
+| Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template; all link sets include `src/rope/rope.c`), VALIDATION_CHECKLIST.md (go/no-go; Gate 0 requires `make test` green), RELEASE_READINESS.md (status/risks/audit incl. the new feature rows), docs/dflash2.md (declared speculative-decoding scope); 2026-09-26 |
+| README | COMPLETE — README.md: Current Model Support (two NInfer Qwen3.8-27B reference models only), Current Artifact Support (NInfer Artifact V2/V3), Hardware Scope (RTX PRO 4000 Blackwell only; soft-gate is a testing affordance), **Engine & CLI Feature Surface** (flag-by-flag status table: wired / validated scaffolding / validated hook), Extensibility (suckless-inspired, architecture influence not code dependency); 2026-09-26 |
+| Feature surface | COMPLETE (host) — RoPE tables (`src/rope/rope.c`, plain + YaRN; plain bit-identical to legacy formula so the golden is unchanged), CLI flag grammar (`src/flags/flags.c`), weights profiles + `mm_engine_cfg_validate` cross-field rules (`src/config/`), `--spec`/`--vision` gates in `mm_engine_load`; tests: `rope_test`, `flags_test`, `engine_features_test` (e2e YaRN q-buffer difference vs plain, plain byte-identical, spec/vision refusals); declared speculative scope: docs/dflash2.md; 2026-09-26 |
+| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo initialized on main (no commits yet); 2026-09-26 |
+| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26 |
+| GPU execution | PENDING — no nvcc/GPU on this host; on a GPU machine: `make golden && make parity-selfcheck && make cuda`, then run the printed commands (GPU_VALIDATION.md §4–§8) |
+| Recommended next step | Human validation on a GPU machine: GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md (now drivable via `make` targets, §4.7) |
+| Audit findings | RELEASE_READINESS.md §7: zero TODO/FIXME markers; artifact/tokenizer/telemetry written but unintegrated; 6.4 GB tmux logs at repo root (junk); docs/architecture.md + docs/design.md referenced but absent; docs/dflash2.md was referenced by flags.h/config.h/engine.c and is now created (2026-09-26); documented gcc/nvcc recipes in READ_MEMORY.md §4 + GPU_VALIDATION.md §5–§7 all include src/rope/rope.c |
 | Risk | cx.cu has never been compiled (no nvcc here); first GPU run may surface .cu-specific compile issues — everything around it is verified; failures are isolated by the runbook's build order and are reportable per the template |

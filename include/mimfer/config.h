@@ -122,6 +122,41 @@ typedef enum mm_kv_dtype {
     MM_KV_N
 } mm_kv_dtype;
 
+/* ------------------------------------------------ weights profiles */
+/*
+ * A named operating point for one reference Qwen3.8-27B NVFP4 checkpoint:
+ * the checkpoint identity, the capabilities its NInfer artifact carries,
+ * and the context defaults the CLI applies when the profile is selected
+ * (explicit flags always win). The engine validates the request against
+ * the profile ceiling and logs the active checkpoint identity at load.
+ * These are the two validated reference checkpoints of this project
+ * (README "Supported artifacts"); the profiles describe the same model
+ * shape -- the NInfer artifacts differ in quantization metadata, the
+ * MTP draft head and the DFlash2 draft window they carry.
+ */
+#define MM_N_PROFILES 2
+
+typedef struct mm_profile {
+    uint32_t    id;          /* 1..MM_N_PROFILES (0 = no profile)        */
+    const char *name;        /* CLI name: --weights-profile NAME         */
+    const char *repo;        /* Hugging Face checkpoint identity         */
+    const char *quant;       /* weight quantization                      */
+    uint32_t    max_ctx;     /* native context ceiling (RoPE)            */
+    uint32_t    def_ctx;     /* default --max-ctx when selected          */
+    uint32_t    def_chunk;   /* default --chunk when selected            */
+    uint32_t    mtp_layers;  /* MTP draft layers the artifact carries    */
+    uint32_t    dflash2_max; /* DFlash2 draft window ceiling the artifact
+                                allows (never above MM_DRAFT_MAX)        */
+    int         has_vision;  /* the artifact carries vision weights      */
+} mm_profile;
+
+extern const mm_profile MM_PROFILES[MM_N_PROFILES];
+
+/* Resolve a profile by its CLI name (case-insensitive); NULL if absent. */
+const mm_profile *mm_profile_by_name(const char *name);
+/* Resolve a profile by id (1..MM_N_PROFILES); NULL if absent. */
+const mm_profile *mm_profile_get(uint32_t id);
+
 /* ------------------------------------------------------ engine config */
 /* The only user-visible knobs. Everything else is derived. */
 typedef struct mm_engine_cfg {
@@ -131,13 +166,27 @@ typedef struct mm_engine_cfg {
     mm_kv_dtype kv_dtype;
     uint32_t    concurrency;   /* 1..MM_MAX_CONCURRENCY, fixed at start    */
     uint32_t    chunk;         /* prefill chunk tokens                     */
-    uint32_t    draft;         /* 0 = off, else MTP draft 1..MM_DRAFT_MAX  */
+    uint32_t    draft;         /* 0 = off, else draft window 1..MM_DRAFT_MAX */
     float       temperature;   /* 0 = greedy                               */
     int         top_k;         /* 0 = off                                  */
     float       top_p;         /* 1.0 = off                                */
     uint64_t    seed;
     int         verbose;       /* log level                                */
     int         no_graph;      /* disable CUDA graph capture (debug)       */
+    /* RoPE long-context scaling (mimfer/rope.h): 0 = plain RoPE (the
+     * golden-reference default). */
+    int         rope_yarn;     /* 1 = YaRN (NTK-by-parts + attention scale) */
+    float       rope_factor;   /* YaRN scale factor s (required > 1.0)     */
+    uint32_t    rope_orig_ctx; /* original context; 0 = model max_pos      */
+    /* Speculative decoding backend: 0 = off, 1 = MTP draft head,
+     * 2 = DFlash2 (docs/dflash2.md). Validated scaffolding: the
+     * draft/verify execution loop is planned work and the engine
+     * refuses to start with a non-off backend (MM_ERR_UNSUPPORTED). */
+    int         spec;
+    int         lm_head_draft; /* score the draft with the draft LM head   */
+    uint32_t    profile_id;    /* weights profile (0 = none)               */
+    int         vision;        /* vision pipeline hook (flags + validation;
+                                   image submission is unsupported yet)    */
 } mm_engine_cfg;
 
 void mm_engine_cfg_default(mm_engine_cfg *c);

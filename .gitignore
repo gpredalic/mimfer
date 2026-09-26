@@ -27,7 +27,7 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
-Makefile
+# NOTE: the root Makefile IS versioned — do not re-add a bare "Makefile" rule.
 
 # Ninja
 .ninja*
@@ -38,7 +38,7 @@ tmp/
 temp/
 *.tmp
 *.log
-tests
+# NOTE: the tests/ directory IS versioned — do not re-add a bare "tests" rule.
 
 # Coverage
 *.gcda
