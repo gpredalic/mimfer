@@ -7,11 +7,13 @@
  * - Host build (no MM_WITH_CUDA): the CPU reference path. Arenas are plain
  *   calloc, plans dispatch straight into src/kernels/cpu/cx.c, no device
  *   state exists. When --artifact is given the engine opens + verifies the
- *   .mimfer container and builds the tokenizer from its ART_TOK section;
+ *   .mimfer container, builds the tokenizer from its ART_TOK section,
+ *   parses the model shape from its ART_MODEL section and stages the real
+ *   weights from its ART_WEIGHTS section (tensor_registry.c, mm_art_model
+ *   _parse / mm_model_weights_load). Without --artifact (the golden path)
  *   the tiny fake model (host_tiny_shape) + deterministic fake weights
- *   stand in for the model/weights sections (internal format pending) so
- *   the whole lifecycle -- load, prefill, decode, sampling, teardown --
- *   runs end-to-end and is bit-deterministic.
+ *   stand in so the whole lifecycle -- load, prefill, decode, sampling,
+ *   teardown -- runs end-to-end and is bit-deterministic.
  *
  * - CUDA build (MM_WITH_CUDA): the same lifecycle owns real device memory.
  *   Arenas are device allocations carrying a host mirror (alloc.h): weights
@@ -475,11 +477,11 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
 #endif
 
     /* Artifact path (lifecycle step 2 + 6): when --artifact is given,
-     * open + verify the container (hard fail) and build the tokenizer
-     * from the ART_TOK section. The model and weights sections are not
-     * parsed yet (their internal format is pending), so the fixed tiny
-     * hybrid shape + deterministic fake weights stand in below until the
-     * fake-weight removal; see RELEASE_READINESS.md §3. */
+     * open + verify the container (hard fail), build the tokenizer from
+     * the ART_TOK section, and require the model + weights sections: the
+     * artifact path is the REAL loading path (ART_MODEL -> model shape,
+     * ART_WEIGHTS -> staged weights; see mm_engine_load and
+     * tensor_registry.c). There is no fake stand-in for an artifact. */
     if (e->cfg.artifact && e->cfg.artifact[0]) {
         const mm_arts *sec;
         const uint8_t *tok_data;
@@ -497,6 +499,18 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
             e->art = NULL;
             free(e);
             return s;
+        }
+        if (!mm_art_find(e->art, ART_MODEL)) {
+            MM_LOGE("engine_create: artifact %s: no ART_MODEL section "
+                    "(model metadata is required)", e->cfg.artifact);
+            s = MM_ERR_CORRUPT;
+            goto fail;
+        }
+        if (!mm_art_find(e->art, ART_WEIGHTS)) {
+            MM_LOGE("engine_create: artifact %s: no ART_WEIGHTS section "
+                    "(weights are required)", e->cfg.artifact);
+            s = MM_ERR_CORRUPT;
+            goto fail;
         }
         sec = mm_art_find(e->art, ART_TOK);
         if (!sec) {
@@ -530,9 +544,32 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                 "deterministic fake weights (golden path)");
     }
 
-    /* Model shape: the artifact's model section is not parsed yet -- stand
-     * in the fixed tiny hybrid shape. */
-    host_tiny_shape(&e->mc);
+    /* Model shape: the artifact's ART_MODEL section when --artifact is
+     * given (the real shape; finalize below validates it), else the fixed
+     * tiny hybrid shape (golden path, identical to the plan tests). */
+    stage = "model_shape";
+    if (e->art) {
+        const mm_arts *sec = mm_art_find(e->art, ART_MODEL);
+        const uint8_t *md;
+        size_t mlen;
+
+        md = mm_art_data(e->art, sec, &mlen);
+        s = mm_art_model_parse(md, mlen, &e->mc);
+        if (s != MM_OK) {
+            MM_LOGE("engine_create: mm_art_model_parse failed: code=%d "
+                    "(%s)", (int)s, mm_status_str(s));
+            goto fail;
+        }
+        MM_LOGW("engine_create: ART_MODEL parsed (layers=%u hidden=%u "
+                "inter=%u q_heads=%u kv_heads=%u head_dim=%u vocab=%u "
+                "max_pos=%u)",
+                e->mc.layers, e->mc.hidden, e->mc.inter, e->mc.q_heads,
+                e->mc.kv_heads, e->mc.head_dim, e->mc.vocab,
+                e->mc.max_pos);
+    } else {
+        host_tiny_shape(&e->mc);
+        MM_LOGW("engine_create: built-in tiny shape (golden path)");
+    }
 
     /* kv_capacity 0 = auto: one full sequence, 64-token aligned. */
     if (e->cfg.kv_capacity == 0)
@@ -549,11 +586,7 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                 "(max_ctx=%u kv_capacity=%u concurrency=%u)",
                 (int)s, mm_status_str(s), e->cfg.max_ctx, e->cfg.kv_capacity,
                 e->cfg.concurrency);
-#ifdef MM_WITH_CUDA
-        mm_cuda_shutdown();
-#endif
-        free(e);
-        return s;
+        goto fail;
     }
     MM_LOGW("engine_create: mm_model_cfg_finalize ok (layers=%u hidden=%u "
             "kv_capacity=%u)",
@@ -569,11 +602,7 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                 "(rope_yarn=%d rope_factor=%f rope_orig_ctx=%u)",
                 (int)s, mm_status_str(s), e->cfg.rope_yarn,
                 (double)e->cfg.rope_factor, e->cfg.rope_orig_ctx);
-#ifdef MM_WITH_CUDA
-        mm_cuda_shutdown();
-#endif
-        free(e);
-        return s;
+        goto fail;
     }
     {
         char rdesc[96];
@@ -591,11 +620,8 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
             MM_LOGE("engine_create: mm_profile_get(%u) returned NULL: "
                     "code=%d (%s)", e->cfg.profile_id, (int)MM_ERR_RANGE,
                     mm_status_str(MM_ERR_RANGE));
-#ifdef MM_WITH_CUDA
-            mm_cuda_shutdown();
-#endif
-            free(e);
-            return MM_ERR_RANGE;
+            s = MM_ERR_RANGE;
+            goto fail;
         }
         if (e->cfg.max_ctx > p->max_ctx) {
             MM_LOGE("engine_create: profile %s: max_ctx %u exceeds the "
@@ -603,11 +629,8 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                     "raising --max-ctx past it); code=%d (%s)",
                     p->name, e->cfg.max_ctx, p->max_ctx, (int)MM_ERR_RANGE,
                     mm_status_str(MM_ERR_RANGE));
-#ifdef MM_WITH_CUDA
-            mm_cuda_shutdown();
-#endif
-            free(e);
-            return MM_ERR_RANGE;
+            s = MM_ERR_RANGE;
+            goto fail;
         }
         e->profile = p;
         MM_LOGI("engine: profile: %s (%s; %s; mtp_layers=%u "
@@ -628,11 +651,8 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                 "start with --spec off; code=%d (%s)",
                 backend, (int)MM_ERR_UNSUPPORTED,
                 mm_status_str(MM_ERR_UNSUPPORTED));
-#ifdef MM_WITH_CUDA
-        mm_cuda_shutdown();
-#endif
-        free(e);
-        return MM_ERR_UNSUPPORTED;
+        s = MM_ERR_UNSUPPORTED;
+        goto fail;
     }
 
     if (e->cfg.vision)
@@ -640,9 +660,11 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                 "returns MM_ERR_UNSUPPORTED until the pipeline lands "
                 "(planned work)");
 
-    /* Weight arena: the fake weights + the pools (bump-allocated from it).
+    /* Weight arena: the weights (real staged from the artifact, or the
+     * deterministic fake fill on the golden path) + the pools
+     * (bump-allocated from it).
      * CUDA build: device arena -- canonical device pointers for the plans,
-     * plus the host mirror the fake fill writes through (alloc.h). */
+     * plus the host mirror the weight staging writes through (alloc.h). */
     w = mm_model_weights_bytes(&e->mc);
     cap = w + host_pool_bytes(&e->mc, e->cfg.kv_capacity, e->cfg.concurrency);
     MM_LOGW("engine_create: arena sizing (weights=%zu, w_arena cap=%zu, "
@@ -675,6 +697,15 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
                                 mm_align_up(sizeof(mm_ctrl), 16));
     MM_LOGW("engine_create: mm_pin_alloc ok (%zu bytes, ptr=%p)",
             (size_t)MM_PIN_BYTES, e->pin);
+    /* VRAM workload-fit gate (design.md §2): the committed device memory
+     * -- weight arena (weights + KV/linear pools), activation arena,
+     * pinned I/O -- must fit the device's reported total minus headroom,
+     * BEFORE any of it is counted on. Hard fail: MM_ERR_NOMEM. */
+    stage = "vram_fit";
+    s = mm_vram_workload_fit(&e->dev, cap, e->a_arena.cap,
+                             (size_t)MM_PIN_BYTES);
+    if (s != MM_OK)
+        goto fail;
 #else
     stage = "w_arena (host)";
     s = mm_arena_init_host(&e->w_arena, cap, "w_arena");
@@ -726,10 +757,34 @@ mm_status mm_engine_load(mm_engine *e)
 
     MM_REQUIRE(e && !e->loaded && e->w_arena.base, MM_ERR_STATE);
 
-    /* Weights: register every tensor + fill the arena deterministically. */
-    s = mm_model_fill_fake(e, e->cfg.seed ? e->cfg.seed : 1);
-    if (s != MM_OK)
-        return s;
+    /* Weights: real staged tensors when the engine was created from an
+     * artifact (the section's sub-checksum block, if any, is stripped
+     * here; its checksums were gated by mm_art_verify at create),
+     * deterministic fake fill on the golden path. */
+    if (e->art) {
+        const mm_arts *sec = mm_art_find(e->art, ART_WEIGHTS);
+        const uint8_t *wd;
+        size_t wlen;
+
+        wd = mm_art_data(e->art, sec, &wlen);
+        if (sec->n_subck > 0) {
+            size_t ckblk = (size_t)sec->n_subck * 8;
+            if (ckblk > wlen) {
+                MM_LOGE("engine_load: ART_WEIGHTS sub-ck block past the "
+                        "payload (%zu > %zu)", ckblk, wlen);
+                return MM_ERR_CORRUPT;
+            }
+            wd += ckblk;
+            wlen -= ckblk;
+        }
+        s = mm_model_weights_load(e, wd, wlen);
+        if (s != MM_OK)
+            return s;
+    } else {
+        s = mm_model_fill_fake(e, e->cfg.seed ? e->cfg.seed : 1);
+        if (s != MM_OK)
+            return s;
+    }
 
     /* Activation map first (the plans reference these pointers). */
     s = mm_plan_reserve_acts(e, e->cfg.chunk);

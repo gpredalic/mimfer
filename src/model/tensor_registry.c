@@ -236,3 +236,338 @@ mm_status mm_model_fill_fake(mm_engine *e, uint64_t seed)
     return MM_OK;
 }
 
+/* ------------------------------------------------- canonical tensor set */
+/*
+ * Public wrappers over gen_all_specs (load order): the packer fixture
+ * builders and the weights loader enumerate the canonical set through
+ * these so a single source of truth defines the tensor layout.
+ */
+size_t mm_model_spec_count(const mm_model_cfg *mc)
+{
+    uint32_t cap;
+    int n;
+    tensor_spec *sp;
+
+    if (!mc)
+        return 0;
+    cap = mc->layers * 12u + 16u;
+    sp = malloc(cap * sizeof *sp);
+    if (!sp)
+        return 0;
+    n = gen_all_specs(mc, sp, cap);
+    free(sp);
+    return n > 0 ? (size_t)n : 0;
+}
+
+mm_status mm_model_spec_at(const mm_model_cfg *mc, size_t i, char *name,
+                           size_t name_sz, uint32_t *rows, uint32_t *cols)
+{
+    uint32_t cap;
+    int n;
+    tensor_spec *sp;
+
+    if (!mc || !name || name_sz < 48 || !rows || !cols)
+        return MM_ERR_RANGE;
+    if (i >= (size_t)(mc->layers * 12u + 16u))
+        return MM_ERR_RANGE;
+    cap = mc->layers * 12u + 16u;
+    sp = malloc(cap * sizeof *sp);
+    if (!sp)
+        return MM_ERR_NOMEM;
+    n = gen_all_specs(mc, sp, cap);
+    if (n <= 0 || i >= (size_t)n) {
+        free(sp);
+        return MM_ERR_RANGE;
+    }
+    snprintf(name, name_sz, "%s", sp[i].name);
+    *rows = sp[i].rows;
+    *cols = sp[i].cols;
+    free(sp);
+    return MM_OK;
+}
+
+/* ---------------------------------------------------- ART_MODEL parse */
+/*
+ * Little-endian fixed layout (documented in tensor_registry.h). The
+ * target is little-endian and the format is LE, so these are memcpy
+ * (same convention as src/artifact/artifact.c).
+ */
+static uint32_t am_rd32(const uint8_t *p)
+{
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return v;
+}
+static float am_rd32f(const uint8_t *p)
+{
+    float f;
+    memcpy(&f, p, 4);
+    return f;
+}
+
+mm_status mm_art_model_parse(const uint8_t *data, size_t len,
+                             mm_model_cfg *out)
+{
+    if (!data || !out)
+        return MM_ERR_STATE;
+    if (len < MM_ART_MODEL_FIXED_SZ) {
+        MM_LOGE("art_model: payload %zu bytes < fixed layout %u bytes",
+                len, (unsigned)MM_ART_MODEL_FIXED_SZ);
+        return MM_ERR_CORRUPT;
+    }
+    if (am_rd32(data + 0) != MM_ART_MODEL_VERSION) {
+        MM_LOGE("art_model: unsupported version %u (this build reads %u)",
+                am_rd32(data + 0), (unsigned)MM_ART_MODEL_VERSION);
+        return MM_ERR_CORRUPT;
+    }
+    if (am_rd32(data + 4) != 0) {
+        MM_LOGE("art_model: unsupported flags %u (only 0 is defined)",
+                am_rd32(data + 4));
+        return MM_ERR_CORRUPT;
+    }
+    if (len > MM_ART_MODEL_FIXED_SZ)
+        MM_LOGI("art_model: %zu reserved extra bytes after the fixed "
+                "layout (ignored by v1)", len - MM_ART_MODEL_FIXED_SZ);
+
+    memset(out, 0, sizeof *out);
+    out->hidden          = am_rd32(data + 8);
+    out->inter           = am_rd32(data + 12);
+    out->layers          = am_rd32(data + 16);
+    out->q_heads         = am_rd32(data + 20);
+    out->kv_heads        = am_rd32(data + 24);
+    out->head_dim        = am_rd32(data + 28);
+    out->rope_dim        = am_rd32(data + 32);
+    out->lin_k_heads     = am_rd32(data + 36);
+    out->lin_k_dim       = am_rd32(data + 40);
+    out->lin_v_heads     = am_rd32(data + 44);
+    out->lin_v_dim       = am_rd32(data + 48);
+    out->conv_k          = am_rd32(data + 52);
+    out->vocab           = am_rd32(data + 56);
+    out->max_pos         = am_rd32(data + 60);
+    out->rope_theta      = am_rd32f(data + 64);
+    out->norm_eps        = am_rd32f(data + 68);
+    out->full_layer_step = am_rd32(data + 72);
+    out->full_layer_offset = am_rd32(data + 76);
+    out->mtp_layers      = am_rd32(data + 80);
+    return MM_OK;
+}
+
+/* --------------------------------------------------- ART_WEIGHTS load */
+/*
+ * Real artifact weight loading (see tensor_registry.h for the on-disk
+ * index layout and the validation gates). The payload passed in starts
+ * at the tensor index (the engine strips any sub-checksum block first;
+ * the section's checksums were already gated by mm_art_verify at
+ * create). All reads are bounds-checked before use; every failure logs
+ * the offending entry and returns with no partial success.
+ */
+static uint16_t aw_rd16(const uint8_t *p)
+{
+    uint16_t v;
+    memcpy(&v, p, 2);
+    return v;
+}
+static uint64_t aw_rd64(const uint8_t *p)
+{
+    uint64_t v;
+    memcpy(&v, p, 8);
+    return v;
+}
+
+mm_status mm_model_weights_load(mm_engine *e, const uint8_t *data, size_t len)
+{
+    const mm_model_cfg *mc;
+    uint32_t cap, n, i;
+    size_t p, total = 0;
+    int nspec;
+    mm_status s = MM_OK;
+    tensor_spec *sp;
+    struct wtent {
+        char     name[48];
+        uint32_t rows, cols;
+        uint64_t off, nbytes;
+    } *ents;
+
+    if (!e || !data || !e->w_arena.base) {
+        MM_LOGE("art_weights: bad state (engine/arena/payload null)");
+        return MM_ERR_STATE;
+    }
+    if (len < 12) {
+        MM_LOGE("art_weights: payload %zu bytes < 12-byte index header",
+                len);
+        return MM_ERR_CORRUPT;
+    }
+    if (am_rd32(data + 0) != MM_ART_WEIGHTS_VERSION) {
+        MM_LOGE("art_weights: unsupported index version %u (this build "
+                "reads %u)", am_rd32(data + 0),
+                (unsigned)MM_ART_WEIGHTS_VERSION);
+        return MM_ERR_CORRUPT;
+    }
+    if (am_rd32(data + 4) != 0) {
+        MM_LOGE("art_weights: unsupported flags %u (only 0 is defined)",
+                am_rd32(data + 4));
+        return MM_ERR_CORRUPT;
+    }
+    n = am_rd32(data + 8);
+    if (n > MM_MAX_TENSORS) {
+        MM_LOGE("art_weights: n_tensors %u > MM_MAX_TENSORS %d", n,
+                MM_MAX_TENSORS);
+        return MM_ERR_CORRUPT;
+    }
+
+    /* Count gate: the index must carry exactly the canonical set of the
+     * model section's shape (a mismatch means the weights belong to a
+     * different model than the metadata claims). */
+    mc = &e->mc;
+    cap = mc->layers * 12u + 16u;
+    sp = malloc(cap * sizeof *sp);
+    ents = calloc(n, sizeof *ents);
+    if (!sp || !ents) {
+        MM_LOGE("art_weights: host allocation failure (n_tensors %u)", n);
+        s = MM_ERR_NOMEM;
+        goto fail;
+    }
+    nspec = gen_all_specs(mc, sp, cap);
+    if (nspec <= 0 || n != (uint32_t)nspec) {
+        MM_LOGE("art_weights: n_tensors %u != canonical count %d for the "
+                "model shape (weights/model mismatch)", n, nspec);
+        s = MM_ERR_SHAPE;
+        goto fail;
+    }
+
+    /* Index walk: bounds, names, geometry, dtype, payload containment. */
+    p = 12;
+    for (i = 0; i < n; i++) {
+        uint16_t nl;
+        uint8_t dt;
+
+        if (p + 2 > len)
+            goto truncated;
+        nl = aw_rd16(data + p);
+        p += 2;
+        if (nl < 1 || nl > 48) {
+            MM_LOGE("art_weights: entry %u: bad name_len %u (1..48)",
+                    i, nl);
+            s = MM_ERR_CORRUPT;
+            goto fail;
+        }
+        if (p + (size_t)nl + 28 > len)
+            goto truncated;
+        if (data[p + (size_t)nl - 1] != 0) {
+            MM_LOGE("art_weights: entry %u: name not NUL-terminated", i);
+            s = MM_ERR_CORRUPT;
+            goto fail;
+        }
+        memcpy(ents[i].name, data + p, nl);
+        p += nl;
+        ents[i].rows = am_rd32(data + p);
+        p += 4;
+        ents[i].cols = am_rd32(data + p);
+        p += 4;
+        dt = data[p];
+        if (dt == (uint8_t)MM_DT_FP4E2M1) {
+            MM_LOGE("art_weights: entry %u (\"%s\"): fp4 weights are not "
+                    "implemented in this build (bf16 only)", i,
+                    ents[i].name);
+            s = MM_ERR_UNSUPPORTED;
+            goto fail;
+        }
+        if (dt != (uint8_t)MM_DT_BF16) {
+            MM_LOGE("art_weights: entry %u (\"%s\"): dtype %u is not "
+                    "bf16 (unsupported)", i, ents[i].name, dt);
+            s = MM_ERR_UNSUPPORTED;
+            goto fail;
+        }
+        p += 4;
+        ents[i].off = aw_rd64(data + p);
+        p += 8;
+        ents[i].nbytes = aw_rd64(data + p);
+        p += 8;
+        if (ents[i].nbytes != (uint64_t)ents[i].rows * ents[i].cols * 2) {
+            MM_LOGE("art_weights: entry %u (\"%s\"): nbytes %llu != "
+                    "rows*cols*2 (%u x %u)", i, ents[i].name,
+                    (unsigned long long)ents[i].nbytes, ents[i].rows,
+                    ents[i].cols);
+            s = MM_ERR_CORRUPT;
+            goto fail;
+        }
+        /* Containment: after the index table, inside the payload. */
+        if (ents[i].off < p || ents[i].off + ents[i].nbytes > len) {
+            MM_LOGE("art_weights: entry %u (\"%s\"): payload region "
+                    "[%llu..%llu) outside the %zu-byte payload (index "
+                    "ends at %zu)", i, ents[i].name,
+                    (unsigned long long)ents[i].off,
+                    (unsigned long long)(ents[i].off + ents[i].nbytes),
+                    len, p);
+            s = MM_ERR_CORRUPT;
+            goto fail;
+        }
+        total += (size_t)ents[i].nbytes;
+    }
+    if (p > len)
+        goto truncated;
+
+    /* Order gate: entry i must be canonical spec i (name + rows + cols).
+     * With the count gate this is the metadata/runtime consistency
+     * check: the index must describe exactly the model section's tensor
+     * set, in load order. */
+    for (i = 0; i < n; i++) {
+        if (strcmp(ents[i].name, sp[i].name) != 0 ||
+            ents[i].rows != sp[i].rows || ents[i].cols != sp[i].cols) {
+            MM_LOGE("art_weights: entry %u: got \"%s\" [%ux%u], canonical "
+                    "spec is \"%s\" [%ux%u] (weights do not match the "
+                    "model section)", i, ents[i].name, ents[i].rows,
+                    ents[i].cols, sp[i].name, sp[i].rows, sp[i].cols);
+            s = MM_ERR_SHAPE;
+            goto fail;
+        }
+    }
+
+    /* Stage: arena slot (256-aligned) + host-mirror copy + bf16 view.
+     * Same allocation pattern as the fake fill, so the arena capacity
+     * computed from mm_model_weights_bytes + pool headroom holds. On a
+     * staging failure the arena holds a partial set; the caller owns
+     * the whole create/destroy cycle, so destroy cleans it up. */
+    for (i = 0; i < n; i++) {
+        size_t bytes = (size_t)ents[i].nbytes;
+        void *slot, *hp;
+        mm_tensor v;
+
+        s = mm_arena_alloc(&e->w_arena, bytes, 256, ents[i].name, &slot);
+        if (s != MM_OK) {
+            MM_LOGE("art_weights: arena exhausted at tensor %u/%u "
+                    "(\"%s\", %zu bytes)", i, n, ents[i].name, bytes);
+            goto fail;
+        }
+        hp = mm_arena_host_ptr(&e->w_arena, slot);
+        if (!hp) {
+            MM_LOGE("art_weights: no host mirror for \"%s\" (staging "
+                    "tensor %u/%u)", ents[i].name, i, n);
+            s = MM_ERR_STATE;
+            goto fail;
+        }
+        memcpy(hp, data + ents[i].off, bytes);
+        v = mm_t_view(slot, MM_DT_BF16, 2, ents[i].rows, ents[i].cols,
+                      0, 0, bytes);
+        s = mm_tens_add(&e->reg, ents[i].name, 0, &v, NULL);
+        if (s != MM_OK) {
+            MM_LOGE("art_weights: registry add failed for \"%s\" "
+                    "(staging tensor %u/%u)", ents[i].name, i, n);
+            goto fail;
+        }
+    }
+    MM_LOGW("art_weights: staged %u tensors (%zu bytes) into w_arena",
+            n, total);
+    s = MM_OK;
+    goto fail;
+fail:
+    free(sp);
+    free(ents);
+    return s;
+truncated:
+    MM_LOGE("art_weights: index truncated at entry %u (offset %zu of a "
+            "%zu-byte payload)", i, p, len);
+    s = MM_ERR_CORRUPT;
+    goto fail;
+}
+

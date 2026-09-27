@@ -142,6 +142,36 @@ mm_status mm_device_check(const mm_dev_info *d, const mm_dev_profile *p)
     return MM_OK;
 }
 
+/* Startup VRAM workload-fit gate: weights+pools (wcap) + activations
+ * (acap) + pinned I/O (pin) must fit the reported total minus headroom.
+ * Called in the CUDA create path before any device allocation; host
+ * builds compile it too (pure arithmetic, unit-tested there). */
+mm_status mm_vram_workload_fit(const mm_dev_info *info, size_t wcap,
+                               size_t acap, size_t pin)
+{
+    size_t need, budget;
+
+    if (!info || info->vram_bytes == 0) {
+        MM_LOGE("vram fit: no device budget to check against");
+        return MM_ERR_DEVICE;
+    }
+    need = wcap + acap + pin;
+    budget = info->vram_bytes -
+             info->vram_bytes * MM_VRAM_FIT_HEADROOM_PCT / 100;
+    if (need > budget) {
+        MM_LOGE("vram fit: workload %zu MiB (weights+pools %zu, activations "
+                "%zu, pinned %zu) > budget %zu MiB (of %zu MiB total, %d%% "
+                "headroom): the model does not fit this device",
+                need >> 20, wcap >> 20, acap >> 20, pin >> 20,
+                budget >> 20, info->vram_bytes >> 20,
+                MM_VRAM_FIT_HEADROOM_PCT);
+        return MM_ERR_NOMEM;
+    }
+    MM_LOGW("vram fit: ok (workload %zu MiB <= budget %zu MiB, of %zu MiB "
+            "total)", need >> 20, budget >> 20, info->vram_bytes >> 20);
+    return MM_OK;
+}
+
 /* ------------------------------------------------------------ model */
 
 const mm_model_cfg MM_Q38_DEFAULT = {

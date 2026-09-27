@@ -67,6 +67,23 @@ mm_status mm_device_probe(int device_ordinal, mm_dev_info *out);
 /* Compare probed info against the target profile; log every mismatch. */
 mm_status mm_device_check(const mm_dev_info *info, const mm_dev_profile *p);
 
+/*
+ * Startup VRAM workload-fit gate (design.md §2 budget): the committed
+ * device memory -- weight arena (weights + KV/linear-conv pools),
+ * activation arena, pinned I/O block -- must fit the device's reported
+ * total, minus MM_VRAM_FIT_HEADROOM_PCT percent held back for the CUDA
+ * context and driver-side overhead (the same 5% tolerance convention as
+ * MM_VRAM_TOLERANCE_PCT: a 24 GB card reports ~23.4 GiB).
+ *
+ * Pure arithmetic (no device calls): host-testable; the engine calls it
+ * from the CUDA create path before committing device memory. Returns
+ * MM_ERR_NOMEM when the workload does not fit, MM_ERR_DEVICE when there
+ * is no device budget to check against.
+ */
+#define MM_VRAM_FIT_HEADROOM_PCT 5
+mm_status mm_vram_workload_fit(const mm_dev_info *info, size_t wcap,
+                               size_t acap, size_t pin);
+
 /* ------------------------------------------------------- model shape */
 /*
  * Qwen3.8-27B (model_type qwen3_5, text core): hybrid of 64 layers in the
