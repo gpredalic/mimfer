@@ -4,26 +4,34 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-26 (session handoff: first silicon run hit
-> `mm_engine_create` FAIL on an RTX PRO 4000 Blackwell w/ CUDA 13.2 +
-> driver 595.71.05 — root cause of the *opaque* failure found and
-> FIXED: the log-level filter in `mm_log` (src/core/mimfer.c) was
-> INVERTED (`lvl < g_mm_log_level` with ERR=0 most severe), so at the
-> default WARN level EVERY MM_LOGE was silently suppressed while
-> INFO/DEBUG printed — the `mm_device_check` gate failure (and the CK
-> CUDA-error logs) were invisible; filter now `lvl > g_mm_log_level`
-> (matches the documented flag semantics `0=err 1=warn 2=info 3=dbg`,
-> flags.c). `mm_engine_create()` is now FULLY INSTRUMENTED (temporary,
-> WARN-trace per stage + ERR code/string/params on every failure path +
-> stage-named `fail:` block); parity_test prints the numeric code +
-> status string on engine-create failure. Rebuilt + re-verified both
-> build systems (make test green; gpu-parity + CMake cuda target zero
-> warnings); driverless dry-run proves the diagnostic chain works
-> (E cuda_rt.c:42 + E engine.c:388 + code=5 line). NEXT: rerun on the
-> GPU machine — the first E line names the exact failing branch)
+> **Last updated:** 2026-09-26 (session handoff: silicon run #2 on the
+> RTX PRO 4000 Blackwell (CUDA 13.2, driver 595.71.05) got PAST engine
+> create — `mm_device_check` gate failed on VRAM (`device gate:
+> 23 GiB < required 24 GiB`; separate known bug, deferred) and
+> `MIMFER_SOFT_DEVICE_GATE=1` continues execution; engine create + load
+> then SUCCEED (all stage ok lines incl. `mm_pin_alloc ok`,
+> `engine_create: ok`). NEW failure: first D2H observable readback —
+> `cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, g_st[st])` →
+> invalid argument (E cuda_rt.c:113 / parity_test.c:322 /
+> parity_test.c:528). Root cause identified by static analysis: in the
+> CUDA build the D2H readback scratch `g_dev`
+> (tests/cuda/parity_test.c:296) is NEVER allocated — only the
+> host-variant `d2h()` calls `buf_grow()` — so the first copy runs with
+> dst=NULL. D2H path now instrumented (temporary): `mm_d2h_async`
+> (cuda_rt.c) logs dst/src/bytes/raw-stream+id + the
+> `cudaPointerGetAttributes` class of both endpoints before every copy;
+> the three parity_test call sites (per-op observable, pool dump,
+> `fetch_tok`) log the readback context. Re-verified: `make test`
+> green; `make gpu-parity` + `make gpu-smoke` from clean with real nvcc
+> 13.1.115 zero warnings (fixed two CUDA 13.1 C-API nits in the
+> instrumentation: `struct cudaPointerAttributes` has no typedef in C;
+> the runtime `cudaMemoryType` enum has no `Unifiable` member). NEXT:
+> re-run on the GPU machine — the first `d2h_async: dst=(nil) class=?`
+> line confirms the root cause; then the one-line fix (buf_grow in the
+> CUDA `d2h()`, mirroring the host variant))
 > **Project health:** GREEN (host) · GPU execution DEBUGGING in progress
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
-> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** FIRST RUN FAILED (engine create, pre-rope) — instrumented, re-run pending
+> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** run 1 failed at engine create (inverted log filter — fixed) · run 2: device gate 23<24 GiB (known, soft-gate bypass) → create+load OK → D2H readback invalid argument; root cause = NULL `g_dev` dst (static analysis), D2H path instrumented, silicon confirmation pending
 > **External validation pack:** COMPLETE (GPU_VALIDATION.md runbook, VALIDATION_CHECKLIST.md go/no-go, RELEASE_READINESS.md status/risks)
 > **Build system:** COMPLETE — Makefile (canonical) + CMakeLists.txt (parity, optional CUDA via `-DMIMFER_ENABLE_CUDA=ON`); both verified end-to-end 2026-09-26
 
@@ -57,7 +65,7 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | Project governance: .clinerules (mandatory rules), .gitignore, git repo initialized (main) |
 | [COMPLETE] | Canonical build system: root Makefile (GNU Make only) — host + CUDA build rules, `make` / `make test` / `make cuda` / `make help` / `make clean` / `make distclean`; artifacts in `build/` |
 | [COMPLETE] | Final build audit (2026-09-26): `BUILD_AUDIT.md` (findings B1–B10, conformance matrix, evidence), `SOURCE_TREE.md` (annotated file inventory), `MODULE_DEPENDENCIES.md` (include graph + module map); two critical GPU-link defects fixed (B1, B10) |
-| [IN PROGRESS] | GPU execution of parity + smoke tests — first silicon run (RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05) FAILS at `mm_engine_create`; the `MM_LOGI("engine: rope: ...")` line never appeared, which under the old filter (INFO printed by default) proves the failure is BEFORE rope init. Root cause of the opacity: inverted log filter (every MM_LOGE hidden at default WARN — the device-gate `E` line was invisible) — FIXED. `mm_engine_create` fully instrumented (temporary) — re-run will name the failing branch with code + string |
+| [IN PROGRESS] | GPU execution of parity + smoke tests — silicon run 2 (RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05): engine create+load now PASSES (device gate `23 GiB < required 24 GiB` VRAM = separate known bug, bypassed with `MIMFER_SOFT_DEVICE_GATE=1`). New blocker: first D2H observable readback fails `cudaMemcpyAsync` invalid argument (E cuda_rt.c:113 / parity_test.c:322 / parity_test.c:528). Root cause identified statically: CUDA-build readback scratch `g_dev` is never allocated → dst=NULL. D2H path instrumented (pre-copy dst/src/bytes/stream + pointer-class dump in `mm_d2h_async` + readback context at the three call sites) — silicon confirmation pending, then the one-line `buf_grow` fix |
 | [PENDING]  | Blackwell Optimizations |
 
 Note: the CUDA execution path is written in full — `src/cuda/cuda_rt.c`
@@ -570,22 +578,25 @@ documentation synced (README feature-surface section, `docs/dflash2.md`
 created, `rope.c` added to every documented link set). Full host suite
 green from `make clean`.
 
-**NEXT TASK: re-run the instrumented parity test on the GPU machine**
-(first silicon run 2026-09-26, RTX PRO 4000 Blackwell + CUDA 13.2 +
-driver 595.71.05, failed at `mm_engine_create` — `FAIL
-tests/cuda/parity_test.c:750: engine create`; the log-filter inversion
-that hid the error line is fixed and the create path is fully
-instrumented, so the re-run output will contain the exact failing
-branch with function, numeric code, `mm_status_str()` and parameters:
-pull the new sources, `make golden && make gpu-parity`, run
-`build/parity_test build/par_golden.bin`, capture the COMPLETE output.
-Suspect to check first: the `mm_device_check` hard gate (its `MM_LOGE`
-"device gate: ..." line was suppressed at default level in the first
-run; the derived-bandwidth ±10% check is the most driver-version-
-sensitive field — see RELEASE_READINESS R4). Once the branch is
-identified: fix the root cause, REMOVE the temporary instrumentation
-(engine.c WARN traces + parity_test code print), re-verify `make test`
-+ `make gpu-parity`, and only then proceed to `gpu_smoke`.)
+**NEXT TASK: confirm the D2H root cause on the GPU machine, then apply the one-line fix**
+(run 2 failed at the first D2H observable readback: `cudaMemcpyAsync
+invalid argument` — E cuda_rt.c:113 → parity_test.c:322 →
+parity_test.c:528. Static analysis identified the invalid parameter:
+`dst` — the readback scratch `g_dev` is never allocated in the CUDA
+build, so the first copy runs with dst=NULL. The D2H path is
+instrumented (temporary): pull the new sources (branch
+`feature/d2h-diag`), `make golden && make gpu-parity`, run
+`MIMFER_SOFT_DEVICE_GATE=1 build/parity_test build/par_golden.bin`
+(the device-gate VRAM bug is still open — 23 GiB < 24 GiB), capture
+the COMPLETE output. Expect the first `W cuda_rt.c: d2h_async:` line to
+read `dst=(nil) class=?` right before the `E cuda_rt.c:113` line —
+that confirms dst=NULL. Then the fix (separate commit): add
+`buf_grow(&g_dev, &g_dev_cap, n)` to the CUDA `d2h()` in
+tests/cuda/parity_test.c, mirroring the host variant — so the scratch
+is allocated before the first copy. Re-verify `make test` +
+`make gpu-parity`, re-run on GPU, then the deferred device-gate VRAM
+fix (23 GiB vs 24 GiB: check the gate arithmetic against the
+driver-reported total memory), then `gpu_smoke`.)
 
 Entry points:
 - **`GPU_VALIDATION.md`** — the complete runbook (machine requirements,
@@ -648,7 +659,7 @@ CUDA incrementally.
 | Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26 |
 | Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 7 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
 | Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
-| GPU execution | FIRST SILICON RUN FAILED + instrumented (2026-09-26) — RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05: `build/parity_test build/par_golden.bin` printed the coverage + device lines then `FAIL tests/cuda/parity_test.c:750: engine create` (old CHECK discarded the code). Failure is BEFORE rope init. Two blockers to diagnosis found + fixed: (1) inverted `mm_log` filter — `lvl < g_mm_log_level` with ERR=0 suppressed EVERY MM_LOGE at default WARN (so the `mm_device_check` "device gate" error and all CK CUDA errors were invisible while INFO printed) — now `lvl > g_mm_log_level`, matching flags.c's documented `0=err 1=warn 2=info 3=dbg`; (2) the hard-gate return of `mm_device_check` and the `goto fail` arena/pin paths logged nothing — `mm_engine_create` now has a stage tracker, WARN enter/ok traces for cfg_validate / cuda_device_count / cuda_init / device_probe / device_check / model_cfg_finalize / rope_init / profile_get / w_arena / a_arena / pin_alloc, ERR code+string+params on every failure path, and a stage-named `fail:` log; parity_test prints `code=N (string)` on engine-create failure. **Temporary — remove after diagnosis.** Re-verified: `make test` green, `make gpu-parity` zero warnings, CMake `--target parity_test` (CUDA) zero warnings + CMake host suite green; driverless dry-run (stub libcuda aliased to `libcuda.so.1`) proves the chain: `E cuda_rt.c:42: cuda: cudaGetDeviceCount...` → `E engine.c:388: engine_create: mm_cuda_device_count failed: code=5 (cuda runtime failure)` → `FAIL ... code=5` |
-| Recommended next step | Re-run on the GPU machine: pull, `make golden && make gpu-parity`, `build/parity_test build/par_golden.bin`, capture the complete output — the first E line names the exact failing branch (prime suspect: `mm_device_check` hard gate, esp. the derived-bandwidth ±10% check, RELEASE_READINESS R4; note the first run's "672 GB/s derived" came from a driver-API memory-clock probe that is version-sensitive). Then: fix root cause, strip the temporary instrumentation, re-verify both build systems, then `gpu_smoke` (GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md) |
+| GPU execution | RUN 2 (2026-09-26, RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05): engine create+load PASS — run-1's opacity blockers (inverted `mm_log` filter; unlogged failure paths) are fixed and held. `mm_device_check` gate now visibly fails on VRAM: `device gate: 23 GiB < required 24 GiB` — SEPARATE known bug, deferred; `MIMFER_SOFT_DEVICE_GATE=1` bypasses it. New failure: first D2H observable readback — `E cuda_rt.c:113` (CK in `mm_d2h_async`) + `E parity_test.c:322` + `E parity_test.c:528`: `cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, g_st[st])` → invalid argument. ROOT CAUSE (static analysis, high confidence): the D2H readback scratch `g_dev` (parity_test.c:296) is never allocated in the CUDA build — only the host `d2h()` calls `buf_grow()` — so the first copy passes dst=NULL. D2H path instrumented (temporary, remove after fix): `mm_d2h_async` (cuda_rt.c) logs dst/src/bytes/raw-stream+id + `cudaPointerGetAttributes` class per endpoint before every copy; the three call sites (per-op observable, pool dump, `fetch_tok`) log readback context. CUDA 13.1 C-API nits fixed in the instrumentation: `struct cudaPointerAttributes` (no C typedef), runtime `cudaMemoryType` has no `Unifiable` member. Re-verified: `make test` green; `make gpu-parity` + `make gpu-smoke` from clean with real nvcc 13.1.115, zero warnings. NEXT: confirm `d2h_async: dst=(nil) class=?` on GPU, then the one-line `buf_grow` fix in the CUDA `d2h()` (separate commit) |
+| Recommended next step | On the GPU machine: pull `feature/d2h-diag` (or main after merge), `make golden && make gpu-parity`, `MIMFER_SOFT_DEVICE_GATE=1 build/parity_test build/par_golden.bin`, capture the COMPLETE output — the first `W cuda_rt.c: d2h_async: dst=(nil) class=?` line before the `E cuda_rt.c:113` confirms dst=NULL. Then: (1) fix — `buf_grow(&g_dev, &g_dev_cap, n)` in the CUDA `d2h()` (mirror the host variant), separate commit; (2) strip the temporary D2H instrumentation (cuda_rt.c pre-copy dump + the three call-site logs) — keep the `mm_log` filter fix and, pending its own diagnosis, the engine-create traces; (3) re-verify `make test` + `make gpu-parity`, re-run on GPU; (4) fix the deferred device-gate VRAM bug (23 GiB < 24 GiB — check the gate arithmetic against driver-reported total memory; on a 24 GB card the driver reports ~23.x GiB, so the gate comparison or the required-24-GiB constant may be wrong); (5) `gpu_smoke` (GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md) |
 | Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry written but unintegrated — all three pass `-fsyntax-only` under the exact release flags (not latent breakage); **no missing headers, no dead sources** (every TU registered, or the 3 above); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
-| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). First **silicon** execution FAILED at `mm_engine_create` (pre-rope; the exact branch is now instrumented and the log-filter bug that hid error output is fixed) — prime suspect is the `mm_device_check` hard gate on driver-reported fields (derived bandwidth from the driver-API memory-clock probe; RELEASE_READINESS R4). Second-order risk now retired: the inverted `mm_log` filter had been silently dropping every MM_LOGE at default level — any *other* hidden runtime error in the CUDA path is now visible. Temporary instrumentation in `mm_engine_create` must be removed once the branch is fixed |
+| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). Silicon: run 1 failed at `mm_engine_create` (root cause: inverted `mm_log` filter — FIXED, kept permanently); run 2 (soft device gate) passes create+load and fails at the first D2H readback — root cause identified statically (NULL `g_dev` dst; the pre-copy instrumentation will confirm on silicon), one-line fix pending. OPEN BUGS: (1) device-gate VRAM check `23 GiB < required 24 GiB` on the RTX PRO 4000 — verify the gate arithmetic against driver-reported total memory (driver 595.71.05 reports ~23.x GiB on a 24 GB card, so the 24-GiB requirement or the comparison may itself be wrong); (2) the pinned-block ctrl design — `e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (the kernels read `e->ctrl_dev` directly, zero-copy); run 2's H2D calls returned success, but that is driver-dependent behavior for a host dst + H2D kind — make it an explicit host memcpy or a real device buffer once the D2H path is cleared. Temporary instrumentation (engine-create stage traces + D2H pre-copy dumps) must be removed after the fixes |

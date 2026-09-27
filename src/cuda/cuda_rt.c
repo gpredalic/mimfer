@@ -108,8 +108,39 @@ mm_status mm_h2d_async(void *dst, const void *src, size_t n, mm_stream_id st)
     return MM_OK;
 }
 
+/* TEMPORARY D2H diagnostic (first-silicon debug; remove after diagnosis):
+ * name the memory class of a pointer for the pre-copy log line. */
+static const char *d2h_ptr_class(enum cudaMemoryType t)
+{
+    switch (t) {
+    case cudaMemoryTypeUnregistered: return "unregistered";
+    case cudaMemoryTypeHost:         return "host";
+    case cudaMemoryTypeDevice:       return "device";
+    case cudaMemoryTypeManaged:      return "managed";
+    default:                         return "?";
+    }
+}
+
 mm_status mm_d2h_async(void *dst, const void *src, size_t n, mm_stream_id st)
 {
+    /* TEMPORARY D2H diagnostic (first-silicon debug; remove after
+     * diagnosis): print both endpoints, the byte count, the raw stream +
+     * its id, and each pointer's memory class before the copy, so the
+     * first invalid-argument failure names its exact bad parameter
+     * (NULL / wrong-side / dangling pointer, zero count, bad stream). */
+    {
+        struct cudaPointerAttributes ad, as;
+        cudaError_t ed = cudaPointerGetAttributes(&ad, dst);
+        cudaError_t es = cudaPointerGetAttributes(&as, src);
+
+        MM_LOGW("d2h_async: dst=%p class=%s src=%p class=%s bytes=%zu "
+                "stream=%p (id=%d)",
+                (void *)dst,
+                ed == cudaSuccess ? d2h_ptr_class(ad.type) : "?",
+                (const void *)src,
+                es == cudaSuccess ? d2h_ptr_class(as.type) : "?",
+                n, (void *)g_st[st], (int)st);
+    }
     CK(cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, g_st[st]));
     return MM_OK;
 }
