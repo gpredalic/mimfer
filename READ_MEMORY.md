@@ -4,11 +4,15 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-27 (GPU parity + smoke VERIFIED on the RTX PRO 4000
-> Blackwell — `PARITY PASSED` + `GPU SMOKE PASSED`; the device-gate VRAM bug
-> is FIXED and re-verified on silicon WITHOUT the bypass — hard gate
-> `mm_device_check ok (target profile matched)`; fix committed on
-> `bugfix/vram-gate-tolerance`; merging both bugfix branches is next):
+> **Last updated:** 2026-09-27 (slot-lifecycle teardown fix S1/S2/S3
+> VERIFIED on CPU + the RTX PRO 4000 Blackwell — `SLOT LIFECYCLE PASSED`,
+> reused-slot B byte-identical to a fresh engine; `bugfix/slot-lifecycle`
+> holds the red-test + fix + runbook commits; merging the three bugfix
+> branches is next; earlier same day: GPU parity + smoke VERIFIED —
+> `PARITY PASSED` + `GPU SMOKE PASSED`; the device-gate VRAM bug is FIXED
+> and re-verified on silicon WITHOUT the bypass — hard gate
+> `mm_device_check ok (target profile matched)`, committed on
+> `bugfix/vram-gate-tolerance`):
 > (1) GPUs: 2× NVIDIA RTX PRO 4000 Blackwell, PCI 0000:05:00.0 +
 > 0000:06:00.0, kernel module 595.71.05; container userspace driver libs
 > 595.91.07 (apt nvidia-utils-595) — nvidia-smi reports an NVML
@@ -52,12 +56,29 @@
 > `device_gate_test` (host suite green under Make AND CMake); silicon
 > re-run WITHOUT the bypass: `mm_device_check ok (target profile
 > matched)`, `GPU SMOKE PASSED` + `PARITY PASSED` (identical bit-exact
-> results). Committed on `bugfix/vram-gate-tolerance`. NEXT: merge both
-> bugfix branches to main (human gate), the pinned-ctrl H2D design
+> results). Committed on `bugfix/vram-gate-tolerance`. SLOT-LIFECYCLE
+> TEARDOWN FIXED + VERIFIED 2026-09-27: a finished sequence's slot was
+> being recycled WITHOUT teardown — (S1) KV blocks never released
+> (`mm_kvpool_release_slot` had no callers; a pool leak per sequence),
+> (S2) the linear recurrence/conv state carried the finished sequence
+> into the next one (`mm_linstate_reset` had no callers), (S3) the
+> block-table row kept stale block ids until the next prefill's
+> incremental push overwrote them. `teardown_slot()` now runs at
+> sequence completion in `step_decode` (release + reset + zeroed-row
+> push, at the round boundary after the token readback host sync).
+> Regression `slot_lifecycle_test` (one shared host/GPU source; A =
+> 40+40 tokens spanning two KV blocks, then B on the freed slot): RED
+> pre-fix (S1/S2/S3 all FAIL), GREEN post-fix on host AND sm_120 silicon
+> — `SLOT LIFECYCLE PASSED` (reused-slot B stream byte-identical to the
+> fresh-engine B and to the host suite; pool free count back to
+> post-load after A and B; A's block-table row zeroed; deterministic
+> across two GPU runs). Committed on `bugfix/slot-lifecycle` (3 commits:
+> red test, fix, docs). NEXT: merge the three bugfix
+> branches to main (human gate), the pinned-ctrl H2D design
 > cleanup, then Blackwell optimizations (each must re-pass parity)
-> **Project health:** GREEN (host) · GPU execution VERIFIED (parity + smoke PASSED on sm_120)
+> **Project health:** GREEN (host) · GPU execution VERIFIED (parity + smoke + slot-lifecycle PASSED on sm_120)
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
-> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** VERIFIED 2026-09-27 — `PARITY PASSED` (2,009,422/2,009,424 elements bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph == direct); run-2 blockers fixed (NULL `g_dev` dst, KV block-id IMA); device-gate VRAM bug FIXED 2026-09-27 (5% tolerance `MM_VRAM_TOLERANCE_PCT` + `device_gate_test`) and re-verified on silicon WITHOUT `MIMFER_SOFT_DEVICE_GATE` (hard gate `mm_device_check ok (target profile matched)`)
+> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** VERIFIED 2026-09-27 — `PARITY PASSED` (2,009,422/2,009,424 elements bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph == direct) + `SLOT LIFECYCLE PASSED` (teardown fix S1/S2/S3); run-2 blockers fixed (NULL `g_dev` dst, KV block-id IMA); device-gate VRAM bug FIXED 2026-09-27 (5% tolerance `MM_VRAM_TOLERANCE_PCT` + `device_gate_test`) and re-verified on silicon WITHOUT `MIMFER_SOFT_DEVICE_GATE` (hard gate `mm_device_check ok (target profile matched)`)
 > **External validation pack:** COMPLETE (GPU_VALIDATION.md runbook, VALIDATION_CHECKLIST.md go/no-go, RELEASE_READINESS.md status/risks)
 > **Build system:** COMPLETE — Makefile (canonical) + CMakeLists.txt (parity, optional CUDA via `-DMIMFER_ENABLE_CUDA=ON`); both verified end-to-end 2026-09-26
 
@@ -93,6 +114,7 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | Final build audit (2026-09-26): `BUILD_AUDIT.md` (findings B1–B10, conformance matrix, evidence), `SOURCE_TREE.md` (annotated file inventory), `MODULE_DEPENDENCIES.md` (include graph + module map); two critical GPU-link defects fixed (B1, B10) |
 | [COMPLETE] | GPU execution of parity + smoke tests — VERIFIED on silicon 2026-09-27 (RTX PRO 4000 Blackwell, sm_120, CUDA 13.1.115, driver 595.71.05): `PARITY PASSED` (1564 ops / 2,009,424 elements, 2,009,422 bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph+direct). Run-2 blockers fixed on `bugfix/kv-index-ima`: D2H scratch `buf_grow` (§6.7), 1-based KV block-id indexing = the IMA root cause (§6.5), host-supplied LIN decay (§6.6); temporary instrumentation removed. Device-gate VRAM bug fixed 2026-09-27 (5% tolerance + `device_gate_test` regression, §6.8) and re-verified on silicon WITHOUT the bypass (hard gate `mm_device_check ok (target profile matched)`) |
 | [COMPLETE] | Device-gate VRAM tolerance — `mm_device_check` accepts the driver-reported total within 5% below nominal (the 24 GB card reports 23.4256 GiB, measured 2026-09-27) + `device_gate_test` regression (host suite, both build systems); silicon re-run without `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively |
+| [COMPLETE] | Slot-lifecycle teardown (S1+S2+S3) — `teardown_slot()` in `src/engine/engine.c` runs at sequence completion: KV blocks released to the pool (S1, no leak), the slot's linear/conv state reset (S2), the block-table row zeroed and pushed (S3, the "no block" state). Regression `slot_lifecycle_test` / `gpu_slot` (one shared source, host + GPU): RED pre-fix, GREEN post-fix on host AND silicon 2026-09-27 (`SLOT LIFECYCLE PASSED`; reused-slot B byte-identical to a fresh engine; pool free count back to post-load; block-table row zeroed; deterministic across two GPU runs) |
 | [PENDING]  | Blackwell Optimizations |
 
 Note: the CUDA execution path is written in full — `src/cuda/cuda_rt.c`
@@ -416,12 +438,12 @@ explicitly NOT ignored.
 
 | Target | Effect |
 |--------|--------|
-| `make` (default) | build all host targets (same as `make host`) → `build/plan_test`, `build/engine_smoke`, `build/rope_test`, `build/flags_test`, `build/engine_features`, `build/par_golden`, `build/par_selfcheck` |
+| `make` (default) | build all host targets (same as `make host`) → `build/plan_test`, `build/engine_smoke`, `build/rope_test`, `build/flags_test`, `build/engine_features`, `build/slot_lifecycle_test`, `build/par_golden`, `build/par_selfcheck` |
 | `make host` | same as default |
-| `make test` / `make tests` | run the host suite strictly sequentially (fail-fast): `plan-test` → `rope-test` → `flags-test` → `engine-smoke` → `engine-features` → `parity-selfcheck` (the last builds `par_golden`, writes `build/par_golden.bin`, then replays it) — unit tests first, engine smoke, feature gates, parity oracle gate last |
-| `make plan-test` / `make rope-test` / `make flags-test` / `make engine-smoke` / `make engine-features` / `make golden` / `make parity-selfcheck` | single test targets (aliases: `make parity` → parity-selfcheck, `make smoke` → engine-smoke) |
-| `make cuda` | build `build/parity_test` + `build/gpu_smoke` with nvcc (needs nvcc on PATH; prints a run command, never runs GPU tests; driverless hosts: `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs`) |
-| `make gpu-parity` / `make gpu-smoke` | CUDA build-only, with the run command printed |
+| `make test` / `make tests` | run the host suite strictly sequentially (fail-fast): `plan-test` → `rope-test` → `flags-test` → `engine-smoke` → `engine-features` → `slot-lifecycle` → `parity-selfcheck` (the last builds `par_golden`, writes `build/par_golden.bin`, then replays it) — unit tests first, engine smoke, feature gates, slot teardown, parity oracle gate last |
+| `make plan-test` / `make rope-test` / `make flags-test` / `make engine-smoke` / `make engine-features` / `make slot-lifecycle` / `make golden` / `make parity-selfcheck` | single test targets (aliases: `make parity` → parity-selfcheck, `make smoke` → engine-smoke) |
+| `make cuda` | build `build/parity_test` + `build/gpu_smoke` + `build/gpu_slot` with nvcc (needs nvcc on PATH; prints a run command, never runs GPU tests; driverless hosts: `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs`) |
+| `make gpu-parity` / `make gpu-smoke` / `make gpu-slot` | CUDA build-only, with the run command printed |
 | `make check-nvcc` | nvcc presence probe (polite error if missing) |
 | `make help` | document every target |
 | `make clean` / `make distclean` | remove `build/` |
@@ -447,10 +469,11 @@ explicitly NOT ignored.
   2. The **default goal** was the first ordinary target in the file
      (`build/plan_test`), so bare `make` built only that one binary. Fix:
      `.DEFAULT_GOAL := all` pinned near the top of the Makefile.
-- Verified end-to-end on 2026-09-26 from a clean tree: `make` builds all
-  seven host binaries; `make test` → `PLAN TEST PASSED` + `ROPE TEST
+- Verified end-to-end on 2026-09-26 from a clean tree (slot-lifecycle
+  target re-verified 2026-09-27): `make` builds all nine host binaries;
+  `make test` → `PLAN TEST PASSED` + `ROPE TEST
   PASSED` + `FLAGS TEST PASSED` + `ENGINE SMOKE PASSED` + `ENGINE FEATURES
-  PASSED` + `PAR GOLDEN WRITTEN build/par_golden.bin` + `PARITY PASSED`
+  PASSED` + `SLOT LIFECYCLE PASSED` + `PAR GOLDEN WRITTEN build/par_golden.bin` + `PARITY PASSED`
   (2009424 elements bit-exact) + `HOST TEST SUITE PASSED`; repeat `make`
   is a no-op; `make cuda` without nvcc fails with an actionable message.
 - The manual `gcc`/`nvcc` commands in §4.1–§4.6 remain valid reference
@@ -580,6 +603,33 @@ explicitly NOT ignored.
 - Re-run 2026-09-27 WITHOUT `MIMFER_SOFT_DEVICE_GATE` after the device-gate
   VRAM fix (§6.8): hard gate `mm_device_check ok (target profile matched)`
   + the same `GPU SMOKE PASSED` (both oracle heads, `rounds=17`/`rounds=71`).
+
+### slot_lifecycle_test / gpu_slot — PASS (slot-lifecycle teardown; 2026-09-27, host + sm_120 silicon)
+
+- One shared source (`tests/host/slot_lifecycle_test.c`), two builds: the
+  host suite (`gcc`, CPU reference — where the kernels read the block
+  table from the very mirror the test checks) and the GPU suite
+  (`nvcc`, `MM_WITH_CUDA`; `make slot-lifecycle` / `make gpu-slot`,
+  runbook §8).
+- Proof structure: sequence A (40 prompt + 40 generated = 80 context
+  tokens, spanning two 64-token KV blocks) runs to completion on slot 0;
+  sequence B (5 + 12) then runs on the slot A freed and its full
+  13-token stream must be byte-identical to B's stream on a fresh engine
+  with the same seed.
+- Checks: **S1** pool free-block count back to post-load after A AND
+  after B (no KV leak; the mid-flight `free_at_65` probe confirms both
+  blocks were actually allocated); **S2** reused-slot B stream ==
+  fresh-engine B stream (the linear recurrence/conv state was reset);
+  **S3** A's entire block-table row zeroed after teardown (the "no
+  block" state).
+- RED pre-fix on the current engine (S1 after A, S3 ×2, S1 after B, S2
+  all FAIL); GREEN post-fix on host AND silicon (`SLOT LIFECYCLE PASSED`,
+  `CUDA_VISIBLE_DEVICES=1`, hard device gate):
+  `fresh B head=[409 2 419 419 419 419 235 419]`,
+  `reuse A head=[14 452 433 189 266 207 201 74]` (`rounds=41`),
+  `reuse B head=[409 2 419 419 419 419 235 419]` — the B heads are
+  identical across CPU and GPU; deterministic across two GPU runs.
+- See §6.9 for the bug it catches.
 
 ### Sanitizer results
 
@@ -729,6 +779,46 @@ explicitly NOT ignored.
   Makefile + CMakeLists.txt + `scripts/run_host_tests.sh` (new test
   stage). Committed on `bugfix/vram-gate-tolerance`.
 
+### 6.9 `src/engine/engine.c` — `step_decode()` — slot teardown missing on sequence completion — FIXED (2026-09-27)
+
+- **Issue:** the round scheduler recycles slots: when a sequence hit its
+  budget or the context cap, `step_decode` only flipped the scheduler
+  state (`mm_sched_done`) and immediately recycled the slot for the next
+  sequence — without tearing down the finished sequence's runtime state.
+  Three defects: **S1** the slot's KV blocks were never released
+  (`mm_kvpool_release_slot` had no callers — a KV leak per sequence,
+  pool exhaustion under multi-request load); **S2** the slot's linear
+  recurrence/conv state (48 Gated-DeltaNet layers + conv tails) carried
+  the finished sequence's values into the next sequence's forward pass
+  (`mm_linstate_reset` had no callers); **S3** the device block-table
+  row kept the finished sequence's block ids until the next prefill's
+  incremental push overwrote them — breaking the pool's documented
+  "zero row == no block" invariant (and, on the CUDA build, leaving
+  stale ids readable by the kernels between prefill and the next write).
+- **Impact:** the second sequence on a reused slot computed with the
+  first sequence's linear state and a stale block table; on the tiny
+  shape the two B streams diverged mid-generation (S2 FAIL in the
+  regression); the pool free count kept dropping (S1 FAIL).
+- **Resolution:** `teardown_slot()` in the `step_decode` completion
+  branch, at the round boundary after the decode round's token readback
+  host sync (the CUDA `fetch_tokens` sync has already quiesced both
+  streams — the reset on the compute stream and the row push on the
+  xfer stream need no event ordering; the next round's `push_ctrl`
+  re-establishes the usual ordering): `mm_kvpool_release_slot` (frees
+  the blocks, zeroes the host row) → `mm_linstate_reset` →
+  `mm_kvpool_push_tab` (the zeroed row; device sync on the CUDA build,
+  host→host copy on the reference build).
+- **Verified:** `slot_lifecycle_test` / `gpu_slot` (one shared source,
+  A = 40+40 tokens spanning two KV blocks, then B on the freed slot):
+  RED pre-fix (S1 after A, S3 ×2, S1 after B, S2 all FAIL), GREEN
+  post-fix on host AND sm_120 silicon — `SLOT LIFECYCLE PASSED`
+  (reused-slot B byte-identical to the fresh-engine B and to the host
+  suite; pool free count back to post-load after A and B; block-table
+  row zeroed; deterministic across two GPU runs). Full host suite green
+  including the bit-exact parity self-check (the single-sequence golden
+  path is untouched — teardown only runs at completion). Committed on
+  `bugfix/slot-lifecycle` (3 commits: red test, fix, runbook/docs).
+
 ---
 ## 7. Next Priority
 
@@ -755,21 +845,36 @@ regenerated (pool layout moved, values and sampled heads unchanged).
 Committed on branch `bugfix/kv-index-ima` (3 commits: KV index fix,
 decay fix, instrumentation cleanup + D2H scratch).
 
-**NEXT TASK: merge both bugfix branches, then the pinned-ctrl H2D cleanup**
+**Completed 2026-09-27 (slot-lifecycle):** the P0 slot-teardown defects
+(S1/S2/S3, §6.9) — the scheduler recycled a finished sequence's slot
+without releasing its KV blocks, resetting its linear/conv state, or
+zeroing its block-table row. Shipped as `slot_lifecycle_test`
+(regression, RED pre-fix, one shared host/GPU source) + `teardown_slot()`
+in the `step_decode` completion branch + runbook §8 / checklist Gate 2.5.
+GREEN on host and silicon (`SLOT LIFECYCLE PASSED`; reused-slot B
+byte-identical to a fresh engine on CPU and GPU; deterministic across
+two GPU runs; full host suite incl. the bit-exact parity self-check
+green). Committed on `bugfix/slot-lifecycle` (3 commits: red test, fix,
+runbook/docs).
+
+**NEXT TASK: merge the three bugfix branches, then the pinned-ctrl H2D cleanup**
 (1) `bugfix/kv-index-ima` (KV index fix, decay fix, instrumentation
-cleanup + D2H scratch) and `bugfix/vram-gate-tolerance` (device-gate VRAM
-tolerance + `device_gate_test` regression) hold the verified commits —
-merge per the branch rules (the repo has no `develop` branch yet; merging
-to `main` is a human gate); (2) DONE — the device-gate VRAM bug (driver
-reports 23.4256 GiB < 24 GiB nominal on the 24 GB card): fixed with the
-5% tolerance (`MM_VRAM_TOLERANCE_PCT`) + regression test, and the target
-card now passes the hard gate natively on silicon (no
-`MIMFER_SOFT_DEVICE_GATE`, §6.8); (3) the pinned-block ctrl design:
-`e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an
-H2D `cudaMemcpyAsync` into it (kernels read it zero-copy) —
+cleanup + D2H scratch), `bugfix/vram-gate-tolerance` (device-gate VRAM
+tolerance + `device_gate_test` regression) and `bugfix/slot-lifecycle`
+(regression + S1/S2/S3 teardown fix + runbook/docs) hold the verified
+commits — merge per the branch rules (the repo has no `develop` branch
+yet; merging to `main` is a human gate); (2) DONE — the device-gate VRAM
+bug (driver reports 23.4256 GiB < 24 GiB nominal on the 24 GB card):
+fixed with the 5% tolerance (`MM_VRAM_TOLERANCE_PCT`) + regression test,
+and the target card now passes the hard gate natively on silicon (no
+`MIMFER_SOFT_DEVICE_GATE`, §6.8); (3) DONE — the slot-lifecycle teardown
+bug (S1/S2/S3): fixed with `teardown_slot()` at sequence completion
+(§6.9), regression-verified on host + silicon; (4) the pinned-block ctrl
+design: `e->ctrl_dev` points into the pinned host block yet `push_ctrl`
+issues an H2D `cudaMemcpyAsync` into it (kernels read it zero-copy) —
 driver-tolerated; make it an explicit host memcpy or a real device
-buffer; (4) then Blackwell optimizations (FMA / tensor-core paths) — each
-MUST re-pass the parity test (§4.6); (5) optional `compute-sanitizer`
+buffer; (5) then Blackwell optimizations (FMA / tensor-core paths) — each
+MUST re-pass the parity test (§4.6); (6) optional `compute-sanitizer`
 sweep once a toolkit that includes it is available.
 
 Entry points:
@@ -785,7 +890,7 @@ Entry points:
 - **`RELEASE_READINESS.md`** — completed/pending subsystems, known risks,
   unverified assumptions, TODO/placeholder audit findings.
 
-Order (full commands in GPU_VALIDATION.md §5–§8) — COMPLETED 2026-09-27 (steps 1–3 passed on silicon; step 4 unavailable — no compute-sanitizer in the local toolkit; step 5 = the next task):
+Order (full commands in GPU_VALIDATION.md §5–§9) — COMPLETED 2026-09-27 (steps 1–3b passed on silicon, incl. the new `gpu_slot` slot-lifecycle teardown gate; the sanitizer step unavailable — no compute-sanitizer in the local toolkit; optimizations = the next task):
 
 1. Golden + oracle pre-gate on the GPU machine (host gcc):
    `par_golden` → `PAR GOLDEN WRITTEN`; `par_selfcheck` → `PARITY PASSED`
@@ -795,6 +900,11 @@ Order (full commands in GPU_VALIDATION.md §5–§8) — COMPLETED 2026-09-27 (s
    expect `PARITY PASSED` (1 bf16 ulp gate on computed ops).
 3. `gpu_smoke` (nvcc) → expect `GPU SMOKE PASSED` (graph == direct,
    oracle heads, deterministic, clean device syncs).
+3b. `gpu_slot` (nvcc; one shared source with the host
+   `slot_lifecycle_test`) → expect `SLOT LIFECYCLE PASSED` (reused-slot
+   B byte-identical to the fresh-engine B; pool free count back to
+   post-load after A and B; block-table row zeroed) — VERIFIED 2026-09-27
+   on silicon, deterministic across two runs.
 4. Optional deeper sweep: `compute-sanitizer` around `/tmp/gpu_smoke`.
 5. Only after 2–4 pass on a real GPU: Blackwell optimization work (FMA /
    tensor-core paths) — each must re-pass the parity test.
@@ -834,6 +944,6 @@ CUDA incrementally.
 | Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (8 host bins in `build/`), `make test` (7-stage sequential host suite, fail-fast: plan → rope → flags → device-gate → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 8 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
 | Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
 | GPU execution | RUN 2 (2026-09-26, RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05): engine create+load PASS — run-1's opacity blockers (inverted `mm_log` filter; unlogged failure paths) are fixed and held. `mm_device_check` gate now visibly fails on VRAM: `device gate: 23 GiB < required 24 GiB` — SEPARATE known bug, deferred; `MIMFER_SOFT_DEVICE_GATE=1` bypasses it. New failure: first D2H observable readback — `E cuda_rt.c:113` (CK in `mm_d2h_async`) + `E parity_test.c:322` + `E parity_test.c:528`: `cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, g_st[st])` → invalid argument. ROOT CAUSE (static analysis, high confidence): the D2H readback scratch `g_dev` (parity_test.c:296) is never allocated in the CUDA build — only the host `d2h()` calls `buf_grow()` — so the first copy passes dst=NULL. D2H path instrumented (temporary, remove after fix): `mm_d2h_async` (cuda_rt.c) logs dst/src/bytes/raw-stream+id + `cudaPointerGetAttributes` class per endpoint before every copy; the three call sites (per-op observable, pool dump, `fetch_tok`) log readback context. CUDA 13.1 C-API nits fixed in the instrumentation: `struct cudaPointerAttributes` (no C typedef), runtime `cudaMemoryType` has no `Unifiable` member. Re-verified: `make test` green; `make gpu-parity` + `make gpu-smoke` from clean with real nvcc 13.1.115, zero warnings. RUNS 3–4 (2026-09-27, same hardware, executed DIRECTLY FROM vibe-workspace — no ai-dev needed): root cause SILICON-CONFIRMED — rebuilt `build/parity_test build/par_golden.bin` (fresh local nvcc build, direct dispatch) printed `W cuda_rt.c:136: d2h_async: dst=(nil) class=unregistered src=... class=device bytes=512` before the `invalid argument` (two stable runs). Direct-dispatch kernels (k_embed + prefill ops) launch AND sync clean on real Blackwell (70 SMs, 23.43 GiB card, 672 GB/s). NEW BUG: `gpu_smoke` graph mode (no_graph=0) — first graph-launch stream sync → `E cx.cu:90: stream sync: an illegal memory access was encountered` (mm_kx_invoke, prefill); fault taints the context (every later `cudaStreamCreateWithFlags` fails with the same IMA); direct dispatch does NOT IMA → graph capture/replay path suspected. Environment: CUDA dev0 = PCI 0000:05:00.0 (/dev/nvidia1) BUSY (ctx create → OOM, VRAM held by an external workload, presumably ai-dev); CUDA dev1 = PCI 0000:06:00.0 (/dev/nvidia0) FREE (23.43 GiB total, ~23.2 GiB free) → always `CUDA_VISIBLE_DEVICES=1`; userspace driver libs 595.91.07 vs kernel 595.71.05 — nvidia-smi NVML mismatch only, CUDA driver API fully functional (probe: cuInit, enumeration, context, H2D/D2H round-trip verified); local toolkit /home/razvijalec/tools/cuda/usr/local/cuda-13.1 (real nvcc V13.1.115, NO compute-sanitizer); `make cuda NVCC=<that path>/nvcc` builds both GPU binaries from clean. NEXT: one-line `buf_grow` fix in the CUDA `d2h()` (separate commit), then strip instrumentation, then local re-run. ALL DONE 2026-09-27 — RUN 5: `PARITY PASSED` (1564 ops, 2,009,424 elements, 2,009,422 bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph+direct); the "graph-mode IMA" was not a graph bug (1-based KV block-id indexing, §6.5) and the fix-unblocked decay gate failure (§6.6) was fixed host-side; `par_golden` regenerated; temporary instrumentation removed; committed on `bugfix/kv-index-ima` (3 commits) |
-| Recommended next step | (1) merge `bugfix/kv-index-ima` (3 verified commits) + `bugfix/vram-gate-tolerance` (device-gate VRAM fix + `device_gate_test`) per the branch rules — human gate for main (no `develop` branch exists yet); (2) DONE — device-gate VRAM bug fixed 2026-09-27 (5% tolerance `MM_VRAM_TOLERANCE_PCT` + `device_gate_test`; silicon re-run WITHOUT the bypass: hard gate `mm_device_check ok`, `GPU SMOKE PASSED` + `PARITY PASSED`; runbook updated); (3) the pinned-ctrl H2D design (H2D into a pinned host dst — driver-tolerated; make it explicit); (4) Blackwell optimizations (FMA / tensor-core) — each MUST re-pass the parity test; (5) `compute-sanitizer` sweep once a toolkit with it is available |
+| Recommended next step | (1) merge `bugfix/kv-index-ima` (3 verified commits) + `bugfix/vram-gate-tolerance` (device-gate VRAM fix + `device_gate_test`) + `bugfix/slot-lifecycle` (slot-teardown regression S1/S2/S3 + `teardown_slot()` fix + runbook) per the branch rules — human gate for main (no `develop` branch exists yet); (2) DONE — device-gate VRAM bug fixed 2026-09-27 (5% tolerance `MM_VRAM_TOLERANCE_PCT` + `device_gate_test`; silicon re-run WITHOUT the bypass: hard gate `mm_device_check ok`, `GPU SMOKE PASSED` + `PARITY PASSED`; runbook updated); (3) DONE — slot-lifecycle teardown fixed 2026-09-27 (`teardown_slot()` at sequence completion: KV release + lin/conv reset + zeroed block-table row; `slot_lifecycle_test`/`gpu_slot` RED pre-fix, GREEN on host + silicon — `SLOT LIFECYCLE PASSED`, reused-slot B byte-identical to a fresh engine, deterministic across two GPU runs; runbook §8 / checklist Gate 2.5 added); (4) the pinned-ctrl H2D design (H2D into a pinned host dst — driver-tolerated; make it explicit); (5) Blackwell optimizations (FMA / tensor-core) — each MUST re-pass the parity test; (6) `compute-sanitizer` sweep once a toolkit with it is available |
 | Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry written but unintegrated — all three pass `-fsyntax-only` under the exact release flags (not latent breakage); **no missing headers, no dead sources** (every TU registered, or the 3 above); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
 | Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). Silicon: run 1 failed at `mm_engine_create` (root cause: inverted `mm_log` filter — FIXED, kept permanently); run 2 (soft device gate) passes create+load and fails at the first D2H readback — root cause identified statically (NULL `g_dev` dst; the pre-copy instrumentation will confirm on silicon), one-line fix pending. OPEN BUGS: the pinned-block ctrl design — `e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (the kernels read `e->ctrl_dev` directly, zero-copy); run 2's H2D calls returned success, but that is driver-dependent behavior for a host dst + H2D kind — make it an explicit host memcpy or a real device buffer once the D2H path is cleared. Temporary instrumentation REMOVED 2026-09-27 (committed on `bugfix/kv-index-ima`); the run-2 IMA root cause (KV block-id indexing) and the LIN decay gate failure are fixed and silicon-verified. RESOLVED 2026-09-27: the device-gate VRAM bug — the driver reports 23.4256 GiB (2.39% below nominal) on the 24 GB card (driver/firmware reserve, measured with a driver-API probe); the gate now tolerates up to 5% below nominal (`MM_VRAM_TOLERANCE_PCT`) + `device_gate_test` regression; silicon re-run WITHOUT `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively (`mm_device_check ok (target profile matched)`, `GPU SMOKE PASSED` + `PARITY PASSED`; §6.8). Remaining risks: (1) the pinned-ctrl H2D design, (2) optimization passes (each must re-pass parity) |
