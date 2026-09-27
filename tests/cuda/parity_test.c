@@ -747,7 +747,11 @@ int main(int argc, char **argv)
     cfg.verbose = 0;
     cfg.no_graph = 1;            /* direct per-op dispatch; graphs: gpu_smoke */
 
-    CHECK(mm_engine_create(&cfg, &e) == MM_OK, "engine create");
+    s = mm_engine_create(&cfg, &e);
+    CHECK(s == MM_OK, "engine create");
+    if (s != MM_OK)
+        fprintf(stderr, "        engine create: code=%d (%s)\n",
+                (int)s, mm_status_str(s));
     if (g_fail)
         return 1;
     CHECK(e->mc.n_full_layers == 2 && e->mc.n_lin_layers == 6,

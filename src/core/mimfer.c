@@ -41,7 +41,14 @@ void mm_log(mm_log_level lvl, const char *file, int line, const char *fmt,
     const char *base;
     va_list ap;
 
-    if ((int)lvl < 0 || (int)lvl > MM_LOG_DBG || lvl < g_mm_log_level)
+    /* Severity order: MM_LOG_ERR (0) is the most severe, MM_LOG_DBG (3)
+     * the least. Print when the message is at least as severe as the
+     * configured level (i.e. its numeric level does not exceed it);
+     * dropping the message on `lvl > g_mm_log_level` is the only reading
+     * under which the default (MM_LOG_WARN) still shows errors. The
+     * previous `lvl < g_mm_log_level` inverted the severity and silently
+     * suppressed every MM_LOGE at the default level. */
+    if ((int)lvl < 0 || (int)lvl > MM_LOG_DBG || lvl > g_mm_log_level)
         return;
     base = strrchr(file, '/');
     base = base ? base + 1 : file;

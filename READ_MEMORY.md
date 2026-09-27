@@ -4,21 +4,26 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-26 (session handoff: CUDA 13.1 real-toolkit
-> build — the GPU build now COMPILES + LINKS with the real local
-> nvcc 13.1.115, driverless via the toolkit link stubs; root cause of
-> the old recipe failure found and fixed: nvcc 13.1's `-x` is a GLOBAL
-> last-value-wins option, so per-source `-x c` compiled `cx.cu` as plain
-> C — all `-x` removed, language by extension (Makefile + CMake);
-> `extern "C"` guards added to 17 public headers (C++ TU linkage);
-> `cx.cu` C-only idioms fixed (comma `dim3` decls, `malloc` casts,
-> `math.h`); `config.c` CUDA 13.1 driver-API probe; `-lcuda` in both
-> link lines; both build systems verified end-to-end, host suite
-> re-green, fatbin inspected (14 kernels, sm_120, zero warnings);
-> GPU_VALIDATION.md / RELEASE_READINESS.md / this memory synced)
-> **Project health:** GREEN
+> **Last updated:** 2026-09-26 (session handoff: first silicon run hit
+> `mm_engine_create` FAIL on an RTX PRO 4000 Blackwell w/ CUDA 13.2 +
+> driver 595.71.05 — root cause of the *opaque* failure found and
+> FIXED: the log-level filter in `mm_log` (src/core/mimfer.c) was
+> INVERTED (`lvl < g_mm_log_level` with ERR=0 most severe), so at the
+> default WARN level EVERY MM_LOGE was silently suppressed while
+> INFO/DEBUG printed — the `mm_device_check` gate failure (and the CK
+> CUDA-error logs) were invisible; filter now `lvl > g_mm_log_level`
+> (matches the documented flag semantics `0=err 1=warn 2=info 3=dbg`,
+> flags.c). `mm_engine_create()` is now FULLY INSTRUMENTED (temporary,
+> WARN-trace per stage + ERR code/string/params on every failure path +
+> stage-named `fail:` block); parity_test prints the numeric code +
+> status string on engine-create failure. Rebuilt + re-verified both
+> build systems (make test green; gpu-parity + CMake cuda target zero
+> warnings); driverless dry-run proves the diagnostic chain works
+> (E cuda_rt.c:42 + E engine.c:388 + code=5 line). NEXT: rerun on the
+> GPU machine — the first E line names the exact failing branch)
+> **Project health:** GREEN (host) · GPU execution DEBUGGING in progress
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
-> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** PENDING (no GPU driver on this host)
+> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** FIRST RUN FAILED (engine create, pre-rope) — instrumented, re-run pending
 > **External validation pack:** COMPLETE (GPU_VALIDATION.md runbook, VALIDATION_CHECKLIST.md go/no-go, RELEASE_READINESS.md status/risks)
 > **Build system:** COMPLETE — Makefile (canonical) + CMakeLists.txt (parity, optional CUDA via `-DMIMFER_ENABLE_CUDA=ON`); both verified end-to-end 2026-09-26
 
@@ -52,7 +57,7 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | Project governance: .clinerules (mandatory rules), .gitignore, git repo initialized (main) |
 | [COMPLETE] | Canonical build system: root Makefile (GNU Make only) — host + CUDA build rules, `make` / `make test` / `make cuda` / `make help` / `make clean` / `make distclean`; artifacts in `build/` |
 | [COMPLETE] | Final build audit (2026-09-26): `BUILD_AUDIT.md` (findings B1–B10, conformance matrix, evidence), `SOURCE_TREE.md` (annotated file inventory), `MODULE_DEPENDENCIES.md` (include graph + module map); two critical GPU-link defects fixed (B1, B10) |
-| [PENDING]  | GPU execution of parity + smoke tests (GPU build now compiles + links driverless with real nvcc 13.1; a GPU host with the driver is what's missing) |
+| [IN PROGRESS] | GPU execution of parity + smoke tests — first silicon run (RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05) FAILS at `mm_engine_create`; the `MM_LOGI("engine: rope: ...")` line never appeared, which under the old filter (INFO printed by default) proves the failure is BEFORE rope init. Root cause of the opacity: inverted log filter (every MM_LOGE hidden at default WARN — the device-gate `E` line was invisible) — FIXED. `mm_engine_create` fully instrumented (temporary) — re-run will name the failing branch with code + string |
 | [PENDING]  | Blackwell Optimizations |
 
 Note: the CUDA execution path is written in full — `src/cuda/cuda_rt.c`
@@ -565,11 +570,22 @@ documentation synced (README feature-surface section, `docs/dflash2.md`
 created, `rope.c` added to every documented link set). Full host suite
 green from `make clean`.
 
-**NEXT TASK: external validation on a GPU machine** (this host now has the
-real CUDA 13.1 toolkit and the GPU build compiles + links driverless via
-toolkit stubs — what is missing is a GPU with the driver to *execute*; the
-process for the human validator is fully documented; nothing speculative
-remains).
+**NEXT TASK: re-run the instrumented parity test on the GPU machine**
+(first silicon run 2026-09-26, RTX PRO 4000 Blackwell + CUDA 13.2 +
+driver 595.71.05, failed at `mm_engine_create` — `FAIL
+tests/cuda/parity_test.c:750: engine create`; the log-filter inversion
+that hid the error line is fixed and the create path is fully
+instrumented, so the re-run output will contain the exact failing
+branch with function, numeric code, `mm_status_str()` and parameters:
+pull the new sources, `make golden && make gpu-parity`, run
+`build/parity_test build/par_golden.bin`, capture the COMPLETE output.
+Suspect to check first: the `mm_device_check` hard gate (its `MM_LOGE`
+"device gate: ..." line was suppressed at default level in the first
+run; the derived-bandwidth ±10% check is the most driver-version-
+sensitive field — see RELEASE_READINESS R4). Once the branch is
+identified: fix the root cause, REMOVE the temporary instrumentation
+(engine.c WARN traces + parity_test code print), re-verify `make test`
++ `make gpu-parity`, and only then proceed to `gpu_smoke`.)
 
 Entry points:
 - **`GPU_VALIDATION.md`** — the complete runbook (machine requirements,
@@ -632,7 +648,7 @@ CUDA incrementally.
 | Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26 |
 | Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 7 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
 | Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
-| GPU execution | PENDING — this host has the real CUDA 13.1 toolkit (nvcc 13.1.115) and the GPU binaries compile + link driverless (toolkit stubs); what is missing is a GPU with the driver. On a GPU machine: `make golden && make parity-selfcheck && make cuda`, then run the printed commands (GPU_VALIDATION.md §4–§8) |
-| Recommended next step | Human validation on a GPU machine: GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md (now drivable via `make` targets, §4.7) |
+| GPU execution | FIRST SILICON RUN FAILED + instrumented (2026-09-26) — RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05: `build/parity_test build/par_golden.bin` printed the coverage + device lines then `FAIL tests/cuda/parity_test.c:750: engine create` (old CHECK discarded the code). Failure is BEFORE rope init. Two blockers to diagnosis found + fixed: (1) inverted `mm_log` filter — `lvl < g_mm_log_level` with ERR=0 suppressed EVERY MM_LOGE at default WARN (so the `mm_device_check` "device gate" error and all CK CUDA errors were invisible while INFO printed) — now `lvl > g_mm_log_level`, matching flags.c's documented `0=err 1=warn 2=info 3=dbg`; (2) the hard-gate return of `mm_device_check` and the `goto fail` arena/pin paths logged nothing — `mm_engine_create` now has a stage tracker, WARN enter/ok traces for cfg_validate / cuda_device_count / cuda_init / device_probe / device_check / model_cfg_finalize / rope_init / profile_get / w_arena / a_arena / pin_alloc, ERR code+string+params on every failure path, and a stage-named `fail:` log; parity_test prints `code=N (string)` on engine-create failure. **Temporary — remove after diagnosis.** Re-verified: `make test` green, `make gpu-parity` zero warnings, CMake `--target parity_test` (CUDA) zero warnings + CMake host suite green; driverless dry-run (stub libcuda aliased to `libcuda.so.1`) proves the chain: `E cuda_rt.c:42: cuda: cudaGetDeviceCount...` → `E engine.c:388: engine_create: mm_cuda_device_count failed: code=5 (cuda runtime failure)` → `FAIL ... code=5` |
+| Recommended next step | Re-run on the GPU machine: pull, `make golden && make gpu-parity`, `build/parity_test build/par_golden.bin`, capture the complete output — the first E line names the exact failing branch (prime suspect: `mm_device_check` hard gate, esp. the derived-bandwidth ±10% check, RELEASE_READINESS R4; note the first run's "672 GB/s derived" came from a driver-API memory-clock probe that is version-sensitive). Then: fix root cause, strip the temporary instrumentation, re-verify both build systems, then `gpu_smoke` (GPU_VALIDATION.md §4–§8, gated by VALIDATION_CHECKLIST.md) |
 | Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry written but unintegrated — all three pass `-fsyntax-only` under the exact release flags (not latent breakage); **no missing headers, no dead sources** (every TU registered, or the 3 above); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
-| Risk | Compile/link layer is CLOSED: `cx.cu` + the full GPU link set compile and link clean against the real nvcc 13.1.115 (driverless, 2026-09-26, both build systems, zero warnings, fatbin verified). Remaining risk is first **silicon** execution: graph capture, launch attributes, L2 windows, driver-reported device attributes (B1/B10 GPU-link defects already fixed). Any runtime failure is isolated by the runbook's build order and reportable per the template |
+| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). First **silicon** execution FAILED at `mm_engine_create` (pre-rope; the exact branch is now instrumented and the log-filter bug that hid error output is fixed) — prime suspect is the `mm_device_check` hard gate on driver-reported fields (derived bandwidth from the driver-API memory-clock probe; RELEASE_READINESS R4). Second-order risk now retired: the inverted `mm_log` filter had been silently dropping every MM_LOGE at default level — any *other* hidden runtime error in the CUDA path is now visible. Temporary instrumentation in `mm_engine_create` must be removed once the branch is fixed |
