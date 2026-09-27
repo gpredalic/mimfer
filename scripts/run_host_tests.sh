@@ -11,7 +11,7 @@
 #   sh scripts/run_host_tests.sh <builddir>
 #
 # <builddir> is the directory holding the host binaries (plan_test,
-# rope_test, flags_test, device_gate_test, engine_smoke,
+# rope_test, flags_test, device_gate_test, artifact_test, engine_smoke,
 # engine_features, slot_lifecycle_test, par_golden, par_selfcheck). With the CMake build it is
 # build/ (CMAKE_BINARY_DIR); with the Makefile build the same layout holds.
 # ============================================================================
@@ -32,6 +32,9 @@ echo "== flags_test (host)"
 echo "== device_gate_test (host)"
 "$BUILDDIR/device_gate_test"
 
+echo "== artifact_test (host)"
+"$BUILDDIR/artifact_test"
+
 echo "== engine_smoke (host)"
 "$BUILDDIR/engine_smoke"
 
@@ -48,4 +51,4 @@ echo "== slot_lifecycle_test (host)"
 echo "== parity self-check (host oracle gate)"
 "$BUILDDIR/par_selfcheck" "$BUILDDIR/par_golden.bin"
 
-echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, slot_lifecycle_test, parity self-check)"
+echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, artifact_test, engine_smoke, engine_features, slot_lifecycle_test, parity self-check)"

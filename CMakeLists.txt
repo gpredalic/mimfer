@@ -9,8 +9,8 @@
 # are kept and equivalent), all in build/ (= CMAKE_BINARY_DIR):
 #
 #   host (gcc):  plan_test  rope_test  flags_test  device_gate_test
-#                engine_smoke  engine_features  slot_lifecycle_test
-#                par_golden  par_selfcheck
+#                artifact_test  engine_smoke  engine_features
+#                slot_lifecycle_test  par_golden  par_selfcheck
 #   GPU  (nvcc): parity_test  gpu_smoke  gpu_slot   (-DMIMFER_ENABLE_CUDA=ON)
 #
 # Test targets (equivalents of the Makefile's run targets):
@@ -122,6 +122,16 @@ set(ENGINE_SRCS
     src/rope/rope.c
     src/sched/sched.c)
 
+# I/O modules (Makefile: IO_SRCS): the .mimfer artifact container, the
+# byte-BPE tokenizer and the telemetry ring. Linked into every engine
+# binary (the engine owns the artifact handle, the embedded tokenizer and
+# the telemetry ring) and the artifact fixture test below.
+set(IO_SRCS
+    src/artifact/artifact.c
+    src/tokenizer/tokenizer.c
+    src/telemetry/telemetry.c)
+list(APPEND ENGINE_SRCS ${IO_SRCS})
+
 # Small unit-test sets (no engine): RoPE tables / CLI flag grammar.
 set(CFG_TEST_SRCS
     src/config/config.c
@@ -137,6 +147,10 @@ add_executable(flags_test      tests/host/flags_test.c src/flags/flags.c ${CFG_T
 # Device gate (mm_device_check): VRAM tolerance regression-anchored to the
 # measured driver value on silicon (23.4256 GiB on the 24 GB card).
 add_executable(device_gate_test tests/host/device_gate_test.c ${CFG_TEST_SRCS})
+# Artifact/tokenizer/telemetry fixture test: in-process .mimfer fixtures,
+# container integrity + corruption cases, byte-BPE encode/decode, mbuf
+# codec, telemetry ring, and the engine's real --artifact path.
+add_executable(artifact_test tests/host/artifact_test.c ${ENGINE_SRCS})
 add_executable(engine_features tests/host/engine_features_test.c ${ENGINE_SRCS})
 # Slot lifecycle regression (multi-request teardown): one shared source,
 # built with gcc here and by nvcc for the GPU binary gpu_slot below.
@@ -148,7 +162,8 @@ add_executable(par_selfcheck   tests/host/par_selfcheck.c ${ENGINE_SRCS})
 
 set(MIMFER_HOST_BINS
     plan_test engine_smoke rope_test flags_test device_gate_test
-    engine_features slot_lifecycle_test par_golden par_selfcheck)
+    artifact_test engine_features slot_lifecycle_test par_golden
+    par_selfcheck)
 
 # Every Makefile host binary links -lm (no CUDA target may receive it).
 foreach(bin IN LISTS MIMFER_HOST_BINS)
@@ -200,6 +215,11 @@ add_custom_target(device-gate-test
     DEPENDS device_gate_test
     COMMENT "== device_gate_test (host)")
 
+add_custom_target(artifact-test
+    COMMAND $<TARGET_FILE:artifact_test>
+    DEPENDS artifact_test
+    COMMENT "== artifact_test (host)")
+
 add_custom_target(engine-smoke
     COMMAND $<TARGET_FILE:engine_smoke>
     DEPENDS engine_smoke
@@ -238,7 +258,8 @@ add_custom_target(test
     COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/scripts/run_host_tests.sh ${CMAKE_BINARY_DIR}
     DEPENDS ${MIMFER_HOST_BINS}
     COMMENT "HOST TEST SUITE (plan_test, rope_test, flags_test, device_gate_test, "
-            "engine_smoke, engine_features, slot_lifecycle_test, parity self-check)")
+            "artifact_test, engine_smoke, engine_features, slot_lifecycle_test, "
+            "parity self-check)")
 
 # Aliases (== 'make parity', 'make smoke', 'make tests').
 add_custom_target(parity DEPENDS parity-selfcheck)
@@ -308,7 +329,10 @@ if(MIMFER_ENABLE_CUDA)
         src/kernels/kx.c
         src/model/tensor_registry.c
         src/rope/rope.c
-        src/sched/sched.c)
+        src/sched/sched.c
+        src/artifact/artifact.c
+        src/tokenizer/tokenizer.c
+        src/telemetry/telemetry.c)
     set(MIMFER_GPU_CU_SRCS src/kernels/cuda/cx.cu)
 
     # Header deps (Makefile:99-100): one-shot builds, no .d tracking.

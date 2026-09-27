@@ -14,7 +14,7 @@
 # Quick start:
 #   make            build all host targets
 #   make test       run the host test suite (plan, rope, flags, device gate,
-#                   engine smoke, engine features, slot lifecycle,
+#                   artifact, engine smoke, engine features, slot lifecycle,
 #                   parity self-check)
 #   make cuda       build the GPU tests (needs nvcc; default arch sm_120)
 #   make help       document every target
@@ -86,6 +86,16 @@ ENGINE_SRCS := \
     src/rope/rope.c \
     src/sched/sched.c
 
+# I/O modules: the .mimfer artifact container, the byte-BPE tokenizer and
+# the telemetry ring. Linked into the engine set (the engine owns the
+# artifact handle, the embedded tokenizer and the telemetry ring) and the
+# artifact fixture test below.
+IO_SRCS := \
+    src/artifact/artifact.c \
+    src/tokenizer/tokenizer.c \
+    src/telemetry/telemetry.c
+ENGINE_SRCS += $(IO_SRCS)
+
 # Small feature sets (unit tests without the engine): RoPE tables and the
 # CLI flag surface, plus the config validation and policy checks they call.
 CFG_TEST_SRCS := \
@@ -128,10 +138,11 @@ PARITY_TEST   := $(BUILDDIR)/parity_test
 GPU_SMOKE     := $(BUILDDIR)/gpu_smoke
 SLOT_LIFECYCLE := $(BUILDDIR)/slot_lifecycle_test
 GPU_SLOT      := $(BUILDDIR)/gpu_slot
+ART_TEST      := $(BUILDDIR)/artifact_test
 
 HOST_BINS := $(PLAN_TEST) $(ENGINE_SMOKE) $(ROPE_TEST) $(FLAGS_TEST) \
              $(DEVICE_GATE_TEST) $(ENG_FEATURES) $(SLOT_LIFECYCLE) \
-             $(PAR_GOLDEN) \
+             $(ART_TEST) $(PAR_GOLDEN) \
              $(PAR_SELFCHECK)
 CUDA_BINS := $(PARITY_TEST) $(GPU_SMOKE) $(GPU_SLOT)
 
@@ -166,6 +177,15 @@ $(FLAGS_TEST): tests/host/flags_test.c $(FLAGS_TEST_SRCS) $(HDRS)
 $(DEVICE_GATE_TEST): tests/host/device_gate_test.c $(CFG_TEST_SRCS) $(HDRS)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) tests/host/device_gate_test.c $(CFG_TEST_SRCS) $(LDLIBS) -o $@
+
+# Artifact/tokenizer/telemetry fixture test: in-process .mimfer fixtures
+# (written with the modules' own writer), container integrity + section
+# verification + corruption cases, the byte-BPE encode/decode, the mbuf
+# codec, the telemetry ring, and the engine's real --artifact path
+# (open + verify + tokenizer load, determinism, hard-fail negatives).
+$(ART_TEST): tests/host/artifact_test.c $(ENGINE_SRCS) $(HDRS)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) tests/host/artifact_test.c $(ENGINE_SRCS) $(LDLIBS) -o $@
 
 # Engine feature gates: YaRN table e2e, spec/vision refusals.
 $(ENG_FEATURES): tests/host/engine_features_test.c $(ENGINE_SRCS) $(HDRS)
@@ -209,7 +229,8 @@ $(GPU_SLOT): tests/host/slot_lifecycle_test.c $(GPU_SRCS) $(HDRS)
 	$(NVCC) $(NVCCFLAGS) $(NVCC_EXTRA) tests/host/slot_lifecycle_test.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
 # ---- targets --------------------------------------------------------------------------
 .PHONY: all host cuda test tests plan-test engine-smoke rope-test \
-        flags-test device-gate-test engine-features slot-lifecycle golden \
+        flags-test device-gate-test artifact-test engine-features \
+        slot-lifecycle golden \
         parity-selfcheck parity smoke gpu-parity gpu-smoke gpu-slot \
         check-nvcc \
         clean distclean help
@@ -253,6 +274,10 @@ device-gate-test: $(DEVICE_GATE_TEST)
 	@echo "== device_gate_test (host)"
 	$(DEVICE_GATE_TEST)
 
+artifact-test: $(ART_TEST)
+	@echo "== artifact_test (host)"
+	$(ART_TEST)
+
 engine-features: $(ENG_FEATURES)
 	@echo "== engine_features (host)"
 	$(ENG_FEATURES)
@@ -284,11 +309,12 @@ test:
 	$(MAKE) rope-test
 	$(MAKE) flags-test
 	$(MAKE) device-gate-test
+	$(MAKE) artifact-test
 	$(MAKE) engine-smoke
 	$(MAKE) engine-features
 	$(MAKE) slot-lifecycle
 	$(MAKE) parity-selfcheck
-	@echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, slot_lifecycle_test, parity self-check)"
+	@echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, artifact_test, engine_smoke, engine_features, slot_lifecycle_test, parity self-check)"
 
 tests: test
 
@@ -331,12 +357,13 @@ help:
 	@echo ""
 	@echo "host tests (build + run, strictly sequential, fail-fast):"
 	@echo "  make test         plan-test → rope-test → flags-test → device-gate-test"
-	@echo "                    → engine-smoke → engine-features → slot-lifecycle"
-	@echo "                    → parity-selfcheck (alias: make tests)"
+	@echo "                    → artifact-test → engine-smoke → engine-features"
+	@echo "                    → slot-lifecycle → parity-selfcheck (alias: make tests)"
 	@echo "  make plan-test        $(PLAN_TEST)   → PLAN TEST PASSED"
 	@echo "  make rope-test        $(ROPE_TEST)   → ROPE TEST PASSED"
 	@echo "  make flags-test       $(FLAGS_TEST)   → FLAGS TEST PASSED"
 	@echo "  make device-gate-test $(DEVICE_GATE_TEST) → DEVICE GATE TEST PASSED"
+	@echo "  make artifact-test    $(ART_TEST)   → ARTIFACT TEST PASSED"
 	@echo "  make engine-smoke     $(ENGINE_SMOKE)   → ENGINE SMOKE PASSED"
 	@echo "  make engine-features  $(ENG_FEATURES)   → ENGINE FEATURES PASSED"
 	@echo "  make slot-lifecycle   $(SLOT_LIFECYCLE)   → SLOT LIFECYCLE PASSED"
