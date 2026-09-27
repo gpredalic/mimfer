@@ -80,12 +80,22 @@ mm_status mm_tok_load(const uint8_t *data, size_t n, mm_tok **out)
     return MM_OK;
 }
 
-void mm_tok_free(mm_tok *t)
+void mm_tok_unload(mm_tok *t)
 {
     if (!t)
         return;
     free(t->mkey);
     free(t->mval);
+    t->mkey = NULL;
+    t->mval = NULL;
+    t->mcap = 0;
+}
+
+void mm_tok_free(mm_tok *t)
+{
+    if (!t)
+        return;
+    mm_tok_unload(t);
     free(t);
 }
 
@@ -109,7 +119,11 @@ const char *mm_tok_str(const mm_tok *t, uint32_t id)
 static int64_t tok_rank(const mm_tok *t, uint32_t a, uint32_t b)
 {
     uint64_t key = ((uint64_t)a << 32) | (b + 1);
-    uint32_t s = (uint32_t)key & (t->mcap - 1);
+    uint32_t s;
+
+    if (t->mcap == 0)
+        return -1;
+    s = (uint32_t)key & (t->mcap - 1);
 
     for (;;) {
         if (t->mkey[s] == 0)
@@ -172,7 +186,8 @@ static hnode heap_pop(hnode *h, uint32_t *nh)
 }
 
 mm_status mm_tok_encode(const mm_tok *t, const uint8_t *text, size_t n,
-                        uint32_t *out, uint32_t cap, int *trunc)
+                        uint32_t *out, uint32_t cap, uint32_t *n_out,
+                        int *trunc)
 {
     uint32_t *ids;
     int32_t *prev, *next;
@@ -183,6 +198,7 @@ mm_status mm_tok_encode(const mm_tok *t, const uint8_t *text, size_t n,
 
     MM_REQUIRE(text && out, MM_ERR_STATE);
     *trunc = 0;
+    *n_out = 0;
     if (n == 0)
         return MM_OK;
     ids = malloc(n * 4);
@@ -194,8 +210,8 @@ mm_status mm_tok_encode(const mm_tok *t, const uint8_t *text, size_t n,
         free(ids); free(prev); free(next); free(dead); free(heap);
         return MM_ERR_NOMEM;
     }
-    memcpy(ids, text, n);
     for (uint32_t i = 0; i < (uint32_t)n; i++) {
+        ids[i] = (uint32_t)text[i];
         prev[i] = (int32_t)(i - 1);
         next[i] = i + 1 < (uint32_t)n ? (int32_t)(i + 1) : -1;
         dead[i] = 0;
@@ -249,6 +265,7 @@ mm_status mm_tok_encode(const mm_tok *t, const uint8_t *text, size_t n,
                 out[o++] = ids[i];
             }
         }
+        *n_out = o;
     }
     free(ids); free(prev); free(next); free(dead); free(heap);
     return MM_OK;

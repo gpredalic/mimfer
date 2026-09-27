@@ -10,7 +10,10 @@
  *   merges:   [n_merges][2] u32   (pair of ids -> new id)
  *   special:  [n_special][2] {u32 id, u32 str_off}
  *   vstr_off: [vocab_size] u32    offset into vstr
- *   vstr:     packed UTF-8 strings
+ *   vstr:     packed UTF-8 strings. The special-token strings pack at
+ *             the FRONT and the last vocab token's string ends at the
+ *             end of vstr: mm_tok_decode derives that last token's
+ *             length from vstr_len.
  *
  * Byte tokens are ids 0..255 (single byte values); merge 0 produces id
  * 256, merge i produces id 256+i, matching the Qwen BPE layout.
@@ -53,11 +56,16 @@ typedef struct mm_tok {
 
 /* data = ART_TOK payload. Takes ownership of nothing (mmap-backed). */
 mm_status mm_tok_load(const uint8_t *data, size_t n, mm_tok **out);
+/* Release the merge-hash arrays of a loaded tokenizer whose struct is
+ * caller-owned (embedded in the caller). Idempotent. */
+void mm_tok_unload(mm_tok *t);
 void mm_tok_free(mm_tok *t);
 
-/* Encode up to cap tokens; *trunc = 1 if the input was cut. */
+/* Encode up to cap tokens; *n_out = tokens written, *trunc = 1 if the
+ * input was cut. */
 mm_status mm_tok_encode(const mm_tok *t, const uint8_t *text, size_t n,
-                        uint32_t *out, uint32_t cap, int *trunc);
+                        uint32_t *out, uint32_t cap, uint32_t *n_out,
+                        int *trunc);
 /* Decode into buf (NUL-terminated); returns bytes written or -1. */
 int mm_tok_decode(const mm_tok *t, const uint32_t *toks, uint32_t n,
                   char *buf, size_t cap);
