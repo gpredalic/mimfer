@@ -14,7 +14,8 @@
 # Quick start:
 #   make            build all host targets
 #   make test       run the host test suite (plan, rope, flags, device gate,
-#                   engine smoke, engine features, parity self-check)
+#                   engine smoke, engine features, slot lifecycle,
+#                   parity self-check)
 #   make cuda       build the GPU tests (needs nvcc; default arch sm_120)
 #   make help       document every target
 # ============================================================================
@@ -125,11 +126,14 @@ PAR_SELFCHECK := $(BUILDDIR)/par_selfcheck
 GOLDEN_BIN    := $(BUILDDIR)/par_golden.bin
 PARITY_TEST   := $(BUILDDIR)/parity_test
 GPU_SMOKE     := $(BUILDDIR)/gpu_smoke
+SLOT_LIFECYCLE := $(BUILDDIR)/slot_lifecycle_test
+GPU_SLOT      := $(BUILDDIR)/gpu_slot
 
 HOST_BINS := $(PLAN_TEST) $(ENGINE_SMOKE) $(ROPE_TEST) $(FLAGS_TEST) \
-             $(DEVICE_GATE_TEST) $(ENG_FEATURES) $(PAR_GOLDEN) \
+             $(DEVICE_GATE_TEST) $(ENG_FEATURES) $(SLOT_LIFECYCLE) \
+             $(PAR_GOLDEN) \
              $(PAR_SELFCHECK)
-CUDA_BINS := $(PARITY_TEST) $(GPU_SMOKE)
+CUDA_BINS := $(PARITY_TEST) $(GPU_SMOKE) $(GPU_SLOT)
 
 NVCC_OK := $(shell command -v $(NVCC) >/dev/null 2>&1 && echo yes)
 
@@ -168,6 +172,15 @@ $(ENG_FEATURES): tests/host/engine_features_test.c $(ENGINE_SRCS) $(HDRS)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) tests/host/engine_features_test.c $(ENGINE_SRCS) $(LDLIBS) -o $@
 
+# Slot lifecycle regression (multi-request teardown): sequence A completes
+# and its slot is torn down (KV blocks released, linear/conv state reset,
+# block-table row zeroed); sequence B then runs on the slot A freed and must
+# match a fresh engine's B stream byte-for-byte. One shared source: built
+# with gcc here and with nvcc for the GPU binary (GPU_SLOT) below.
+$(SLOT_LIFECYCLE): tests/host/slot_lifecycle_test.c $(ENGINE_SRCS) $(HDRS)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) tests/host/slot_lifecycle_test.c $(ENGINE_SRCS) $(LDLIBS) -o $@
+
 $(PAR_GOLDEN): tests/host/par_golden.c $(ENGINE_SRCS) $(HDRS)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) tests/host/par_golden.c $(ENGINE_SRCS) $(LDLIBS) -o $@
@@ -187,10 +200,18 @@ $(PARITY_TEST): tests/cuda/parity_test.c $(GPU_SRCS) $(HDRS)
 $(GPU_SMOKE): tests/cuda/gpu_smoke.c $(GPU_SRCS) $(HDRS)
 	mkdir -p $(@D)
 	$(NVCC) $(NVCCFLAGS) $(NVCC_EXTRA) tests/cuda/gpu_smoke.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
+
+# GPU build of the slot lifecycle regression: the SAME source as the host
+# binary (tests/host/slot_lifecycle_test.c), compiled by nvcc as C against
+# the GPU engine set (see the no-`-x` note above).
+$(GPU_SLOT): tests/host/slot_lifecycle_test.c $(GPU_SRCS) $(HDRS)
+	mkdir -p $(@D)
+	$(NVCC) $(NVCCFLAGS) $(NVCC_EXTRA) tests/host/slot_lifecycle_test.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
 # ---- targets --------------------------------------------------------------------------
 .PHONY: all host cuda test tests plan-test engine-smoke rope-test \
-        flags-test device-gate-test engine-features golden \
-        parity-selfcheck parity smoke gpu-parity gpu-smoke check-nvcc \
+        flags-test device-gate-test engine-features slot-lifecycle golden \
+        parity-selfcheck parity smoke gpu-parity gpu-smoke gpu-slot \
+        check-nvcc \
         clean distclean help
 
 all: host
@@ -208,8 +229,8 @@ check-nvcc:
 # Build both GPU binaries.
 cuda: check-nvcc
 	$(MAKE) $(CUDA_BINS)
-	@echo "GPU binaries built (arch $(CUDA_ARCH)): $(PARITY_TEST) $(GPU_SMOKE)"
-	@echo "run commands (on a GPU machine): make gpu-parity / make gpu-smoke"
+	@echo "GPU binaries built (arch $(CUDA_ARCH)): $(PARITY_TEST) $(GPU_SMOKE) $(GPU_SLOT)"
+	@echo "run commands (on a GPU machine): make gpu-parity / make gpu-smoke / make gpu-slot"
 
 # ---- host tests (build + run) ------------------------------------------------------------
 plan-test: $(PLAN_TEST)
@@ -236,6 +257,10 @@ engine-features: $(ENG_FEATURES)
 	@echo "== engine_features (host)"
 	$(ENG_FEATURES)
 
+slot-lifecycle: $(SLOT_LIFECYCLE)
+	@echo "== slot_lifecycle_test (host)"
+	$(SLOT_LIFECYCLE)
+
 # Golden writer. Phony on purpose: the golden is rewritten on every parity
 # self-check, so it is never compared against a stale golden (the golden is
 # tied to the CPU reference; kernel changes must re-gate).
@@ -261,8 +286,9 @@ test:
 	$(MAKE) device-gate-test
 	$(MAKE) engine-smoke
 	$(MAKE) engine-features
+	$(MAKE) slot-lifecycle
 	$(MAKE) parity-selfcheck
-	@echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, parity self-check)"
+	@echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, slot_lifecycle_test, parity self-check)"
 
 tests: test
 
@@ -279,6 +305,12 @@ gpu-smoke: check-nvcc
 	@echo "built $(GPU_SMOKE) (arch $(CUDA_ARCH)) — not run automatically."
 	@echo "on the GPU machine (GPU_VALIDATION.md §7):"
 	@echo "  $(GPU_SMOKE)"
+
+gpu-slot: check-nvcc
+	$(MAKE) $(GPU_SLOT)
+	@echo "built $(GPU_SLOT) (arch $(CUDA_ARCH)) — not run automatically."
+	@echo "on the GPU machine (GPU_VALIDATION.md §8):"
+	@echo "  $(GPU_SLOT)"
 
 # ---- housekeeping --------------------------------------------------------------------------
 clean:
@@ -299,14 +331,15 @@ help:
 	@echo ""
 	@echo "host tests (build + run, strictly sequential, fail-fast):"
 	@echo "  make test         plan-test → rope-test → flags-test → device-gate-test"
-	@echo "                    → engine-smoke → engine-features → parity-selfcheck"
-	@echo "                    (alias: make tests)"
+	@echo "                    → engine-smoke → engine-features → slot-lifecycle"
+	@echo "                    → parity-selfcheck (alias: make tests)"
 	@echo "  make plan-test        $(PLAN_TEST)   → PLAN TEST PASSED"
 	@echo "  make rope-test        $(ROPE_TEST)   → ROPE TEST PASSED"
 	@echo "  make flags-test       $(FLAGS_TEST)   → FLAGS TEST PASSED"
 	@echo "  make device-gate-test $(DEVICE_GATE_TEST) → DEVICE GATE TEST PASSED"
 	@echo "  make engine-smoke     $(ENGINE_SMOKE)   → ENGINE SMOKE PASSED"
 	@echo "  make engine-features  $(ENG_FEATURES)   → ENGINE FEATURES PASSED"
+	@echo "  make slot-lifecycle   $(SLOT_LIFECYCLE)   → SLOT LIFECYCLE PASSED"
 	@echo "  make golden           $(GOLDEN_BIN)  → PAR GOLDEN WRITTEN"
 	@echo "  make parity-selfcheck $(PAR_SELFCHECK) → PARITY PASSED"
 	@echo "  make parity           alias: make parity-selfcheck"
@@ -315,6 +348,7 @@ help:
 	@echo "gpu tests (build only; print the run command, never run automatically):"
 	@echo "  make gpu-parity     $(PARITY_TEST)   (run with the golden: '$(PARITY_TEST) $(GOLDEN_BIN)')"
 	@echo "  make gpu-smoke      $(GPU_SMOKE)"
+	@echo "  make gpu-slot       $(GPU_SLOT)      (slot lifecycle regression)"
 	@echo ""
 	@echo "housekeeping:"
 	@echo "  make clean          remove $(BUILDDIR)/"

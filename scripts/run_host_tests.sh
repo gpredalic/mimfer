@@ -12,7 +12,7 @@
 #
 # <builddir> is the directory holding the host binaries (plan_test,
 # rope_test, flags_test, device_gate_test, engine_smoke,
-# engine_features, par_golden, par_selfcheck). With the CMake build it is
+# engine_features, slot_lifecycle_test, par_golden, par_selfcheck). With the CMake build it is
 # build/ (CMAKE_BINARY_DIR); with the Makefile build the same layout holds.
 # ============================================================================
 
@@ -38,6 +38,9 @@ echo "== engine_smoke (host)"
 echo "== engine_features (host)"
 "$BUILDDIR/engine_features"
 
+echo "== slot_lifecycle_test (host)"
+"$BUILDDIR/slot_lifecycle_test"
+
 # Golden writer — silent, like 'make golden': par_golden prints
 # 'PAR GOLDEN WRITTEN ...' itself.
 "$BUILDDIR/par_golden" "$BUILDDIR/par_golden.bin"
@@ -45,4 +48,4 @@ echo "== engine_features (host)"
 echo "== parity self-check (host oracle gate)"
 "$BUILDDIR/par_selfcheck" "$BUILDDIR/par_golden.bin"
 
-echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, parity self-check)"
+echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, slot_lifecycle_test, parity self-check)"

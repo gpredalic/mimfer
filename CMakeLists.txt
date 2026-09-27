@@ -9,14 +9,16 @@
 # are kept and equivalent), all in build/ (= CMAKE_BINARY_DIR):
 #
 #   host (gcc):  plan_test  rope_test  flags_test  device_gate_test
-#                engine_smoke  engine_features  par_golden  par_selfcheck
-#   GPU  (nvcc): parity_test  gpu_smoke     (-DMIMFER_ENABLE_CUDA=ON)
+#                engine_smoke  engine_features  slot_lifecycle_test
+#                par_golden  par_selfcheck
+#   GPU  (nvcc): parity_test  gpu_smoke  gpu_slot   (-DMIMFER_ENABLE_CUDA=ON)
 #
 # Test targets (equivalents of the Makefile's run targets):
 #   cmake --build build --target test     == make test
 #   cmake --build build --target parity   == make parity
 #   cmake --build build --target smoke    == make smoke
 #   cmake --build build --target golden   == make golden
+#   cmake --build build --target slot-lifecycle == make slot-lifecycle
 #
 # Flag policy (do NOT change without re-running the parity gate —
 # GPU_VALIDATION.md §3.4):
@@ -136,6 +138,9 @@ add_executable(flags_test      tests/host/flags_test.c src/flags/flags.c ${CFG_T
 # measured driver value on silicon (23.4256 GiB on the 24 GB card).
 add_executable(device_gate_test tests/host/device_gate_test.c ${CFG_TEST_SRCS})
 add_executable(engine_features tests/host/engine_features_test.c ${ENGINE_SRCS})
+# Slot lifecycle regression (multi-request teardown): one shared source,
+# built with gcc here and by nvcc for the GPU binary gpu_slot below.
+add_executable(slot_lifecycle_test tests/host/slot_lifecycle_test.c ${ENGINE_SRCS})
 add_executable(par_golden      tests/host/par_golden.c ${ENGINE_SRCS})
 # Host self-check: thin wrapper that #includes tests/cuda/parity_test.c
 # (one shared comparator, built without MM_WITH_CUDA).
@@ -143,7 +148,7 @@ add_executable(par_selfcheck   tests/host/par_selfcheck.c ${ENGINE_SRCS})
 
 set(MIMFER_HOST_BINS
     plan_test engine_smoke rope_test flags_test device_gate_test
-    engine_features par_golden par_selfcheck)
+    engine_features slot_lifecycle_test par_golden par_selfcheck)
 
 # Every Makefile host binary links -lm (no CUDA target may receive it).
 foreach(bin IN LISTS MIMFER_HOST_BINS)
@@ -205,6 +210,11 @@ add_custom_target(engine-features
     DEPENDS engine_features
     COMMENT "== engine_features (host)")
 
+add_custom_target(slot-lifecycle
+    COMMAND $<TARGET_FILE:slot_lifecycle_test>
+    DEPENDS slot_lifecycle_test
+    COMMENT "== slot_lifecycle_test (host)")
+
 # Host parity self-check (oracle pre-gate): expect PARITY PASSED.
 add_custom_target(parity-selfcheck
     COMMAND $<TARGET_FILE:par_selfcheck> ${MIMFER_GOLDEN_BIN}
@@ -228,7 +238,7 @@ add_custom_target(test
     COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/scripts/run_host_tests.sh ${CMAKE_BINARY_DIR}
     DEPENDS ${MIMFER_HOST_BINS}
     COMMENT "HOST TEST SUITE (plan_test, rope_test, flags_test, device_gate_test, "
-            "engine_smoke, engine_features, parity self-check)")
+            "engine_smoke, engine_features, slot_lifecycle_test, parity self-check)")
 
 # Aliases (== 'make parity', 'make smoke', 'make tests').
 add_custom_target(parity DEPENDS parity-selfcheck)
@@ -326,9 +336,25 @@ if(MIMFER_ENABLE_CUDA)
             COMMENT "== nvcc ${bin} (arch ${MIMFER_CUDA_ARCH})")
     endforeach()
 
+    # Slot lifecycle regression (GPU build): the SAME source as the host
+    # binary slot_lifecycle_test (tests/host/slot_lifecycle_test.c), compiled
+    # by nvcc as C against the GPU engine set (Makefile: GPU_SLOT).
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/gpu_slot
+        COMMAND ${CMAKE_CUDA_COMPILER} ${MIMFER_NVCCFLAGS} ${MIMFER_NVCC_EXTRA}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/host/slot_lifecycle_test.c"
+                ${MIMFER_GPU_C_ABS}
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/cx.cu"
+                -o ${CMAKE_BINARY_DIR}/gpu_slot
+        DEPENDS "tests/host/slot_lifecycle_test.c"
+                ${MIMFER_GPU_C_SRCS} ${MIMFER_GPU_CU_SRCS}
+                ${MIMFER_GPU_HDRS}
+        COMMENT "== nvcc gpu_slot (arch ${MIMFER_CUDA_ARCH})")
+
     set(MIMFER_CUDA_BINS
         ${CMAKE_BINARY_DIR}/parity_test
-        ${CMAKE_BINARY_DIR}/gpu_smoke)
+        ${CMAKE_BINARY_DIR}/gpu_smoke
+        ${CMAKE_BINARY_DIR}/gpu_slot)
 
     # Build both GPU binaries (== 'make cuda'; build only, never run).
     add_custom_target(cuda DEPENDS ${MIMFER_CUDA_BINS})
