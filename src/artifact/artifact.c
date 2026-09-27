@@ -347,6 +347,11 @@ mm_status mm_art_write(const char *path, uint16_t major, uint16_t minor,
                    secs[i].offset) != (ssize_t)secs[i].length)
             goto io;
     }
+    /* Pad to the stored file_size: the layout is 4 KiB aligned, so the
+     * on-disk size must equal the superblock's file_size (the reader
+     * compares them; a short file is a truncated download). */
+    if (ftruncate(fd, (off_t)fsize) != 0)
+        goto io;
     if (close(fd) != 0)
         goto io;
     return MM_OK;
