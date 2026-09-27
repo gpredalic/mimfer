@@ -1,6 +1,7 @@
 # RELEASE_READINESS.md — Status & Risk Summary (mimfer)
 
-> Snapshot: 2026-09-26. Scope: what is complete, what is pending, what is
+> Snapshot: 2026-09-26; silicon-verification status updated 2026-09-27.
+> Scope: what is complete, what is pending, what is
 > risky, what has not been verified. Companions: `READ_MEMORY.md` (state),
 > `GPU_VALIDATION.md` (how to validate on a GPU), `VALIDATION_CHECKLIST.md`
 > (go/no-go gate). All findings below were taken from the source tree on
@@ -11,12 +12,14 @@
 - **Host (CPU) reference: release-ready.** Planner, CPU kernels, engine,
   KV pool, scheduler, sampling — all implemented and verified (unit +
   smoke + ASan/UBSan), deterministic across runs.
-- **GPU path: code-complete and now build-verified, not hardware-verified.**
-  `src/cuda/` and `src/kernels/cuda/cx.cu` compile and link against the real
-  CUDA 13.1 toolkit (nvcc 13.1.115, driverless build via toolkit link stubs —
-  2026-09-26, Makefile and CMake) but have not been **executed on silicon**.
-  No GPU claim may be made until `VALIDATION_CHECKLIST.md` passes on real
-  hardware.
+- **GPU path: code-complete, build-verified, and now silicon-verified
+  (2026-09-27).** `src/cuda/` and `src/kernels/cuda/cx.cu` compile with
+  the real CUDA 13.1 toolkit (nvcc 13.1.115, `-arch=sm_120`) and execute
+  on the RTX PRO 4000 Blackwell: `parity_test` (class-1 max 1.000 bf16
+  ulp, 2009422/2009424 elements bit-exact) + `gpu_smoke` + `gpu_slot`
+  (slot-lifecycle teardown gate) all passed with the hard device gate
+  active (no bypass). The only remaining checklist item is the optional
+  `compute-sanitizer` sweep.
 - **Known deferred scope** (by design, documented in-tree): artifact
   loading, tokenizer, telemetry, FP8 KV, MTP draft — written or declared,
   not integrated (§3).
@@ -44,6 +47,7 @@
 | Feature test harness (engine-level, host) | `tests/host/engine_features_test.c` | COMPLETE | one prefill round: YaRN table demonstrably changes the rotated q buffer vs plain (the table reaches the kernels); plain runs byte-identical (golden path unchanged) |
 | End-to-end GPU smoke test | `tests/cuda/gpu_smoke.c` | WRITTEN | written + syntax-checked; pending GPU execution |
 | Device profile + gate (RTX PRO 4000 target, soft-gate env var) | `src/config/config.c`, `src/engine/engine.c` | WRITTEN | host-verified (gate code path only reached in CUDA builds) |
+| Slot lifecycle teardown (S1+S2+S3: KV release + linear/conv state reset + block-table zero on sequence completion) | `src/engine/engine.c` (`teardown_slot`) | COMPLETE (host + GPU) | `slot_lifecycle_test` / `gpu_slot` (one shared source): reused-slot B stream byte-identical to the fresh-engine B on CPU and on silicon (2026-09-27); pool free count back to post-load after A and B; A's block-table row zeroed |
 
 ## 3. Pending / unintegrated subsystems
 
@@ -83,24 +87,32 @@
 
 ## 6. Hardware validation status
 
-**Verified on host (this machine, 2026-09-25/26):**
+**Verified on host (this machine, 2026-09-25/27):**
 `plan_test` PASS · `rope_test` PASS (plain bit-exact vs legacy formula;
 YaRN vs reference formula) · `flags_test` PASS (full grammar, cross-field
 rules, explicit errors) · `engine_smoke` PASS (4 cases, byte-identical
 token streams across two runs) · `engine_features_test` PASS (YaRN table
 reaches the kernels; plain byte-identical; spec/vision refusals) ·
+`slot_lifecycle_test` PASS (multi-request teardown: reused-slot B stream
+byte-identical to a fresh engine's B; pool free count back to post-load;
+block-table row zeroed) ·
 `par_golden` written (3,761,596 B, reproducible
 byte-for-byte on re-run) ·
 `par_selfcheck` PASS (bit-exact, all classes at ulp 0) · ASan+UBSan clean
 (no leaks/overflow/UB) · host regression green under `-Werror` (now the
-`make test` suite, 6 binaries, strictly sequential).
+`make test` suite, 9 binaries, strictly sequential).
 
-**Not verified (requires a GPU; exactly what remains):**
-1. `/tmp/par_golden` build+run on the GPU machine (host gcc) → `PAR GOLDEN WRITTEN`
-2. `/tmp/par_selfcheck` build+run (host gcc) → `PARITY PASSED` (oracle gate)
-3. `/tmp/parity_test` build (nvcc) + run → `PARITY PASSED`
-4. `/tmp/gpu_smoke` build (nvcc) + run → `GPU SMOKE PASSED`
-5. optional: `compute-sanitizer` sweep → 0 errors
+**Verified on silicon (RTX PRO 4000 Blackwell, 2026-09-27; hard device
+gate active, no bypass — A5, R4):** runbook steps 1–4 are closed on the
+card — `par_golden` + `par_selfcheck` (oracle pre-gate) + `parity_test`
+(`PARITY PASSED`: 1564 ops, 2009424 elements, 2009422 bit-exact, class-1
+max 1.000 bf16 ulp) + `gpu_smoke` (`GPU SMOKE PASSED`, token heads match
+the CPU oracle, deterministic across runs). Runbook step 4b — `gpu_slot`
+(slot-lifecycle teardown gate, 2026-09-27) — `SLOT LIFECYCLE PASSED`:
+the reused-slot B stream is byte-identical to the fresh-engine B and to
+the host suite's output (deterministic across two runs).
+**Still pending:** only the optional `compute-sanitizer` sweep
+(runbook step 5) — 0 errors.
 
 All commands, expected outputs, and failure interpretation:
 `GPU_VALIDATION.md`. Go/no-go: `VALIDATION_CHECKLIST.md`.

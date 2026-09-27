@@ -6,8 +6,8 @@
 > **Scope:** this document is the complete, self-contained procedure. The
 > host (no-GPU) side of the project is fully verified (planner, CPU
 > reference, engine smoke, sanitizers). Everything below is what must be
-> done on the GPU machine. If a step fails, use §9 (Troubleshooting) and
-> file a report per §10.
+> done on the GPU machine. If a step fails, use §10 (Troubleshooting) and
+> file a report per §11.
 >
 > **State of the code:** the CPU reference is the correctness oracle and is
 > verified. The CUDA path (`src/cuda/`, `src/kernels/cuda/cx.cu`) is written
@@ -31,7 +31,7 @@
 | Driver | Current NVIDIA driver; `nvidia-smi` must list the GPU | |
 | Host compiler | GCC (recent; C11) | Builds the golden/self-check directly, and compiles the C translation units inside the nvcc builds. |
 | RAM | ≥ 2 GiB free | All tests use a tiny 8-layer built-in model (§3.5); allocations are single-digit MiB. |
-| Disk | < 50 MiB | Sources ~1 MB, `/tmp/par_golden.bin` 3.8 MB, four binaries. |
+| Disk | < 50 MiB | Sources ~1 MB, `/tmp/par_golden.bin` 3.8 MB, five binaries. |
 
 **Build:** the canonical build system is the **root `Makefile`** (GNU Make
 only; `make` / `make test` / `make cuda`, artifacts in `build/`). Every
@@ -48,8 +48,9 @@ the reference. **There are no external dependencies:** libc + libm +
 | 2 | `/tmp/par_selfcheck` | gcc (host) | Replays the golden against this machine's CPU reference — the **oracle pre-gate**: proves the golden matches this machine bit-exactly before any GPU comparison | `PARITY PASSED` |
 | 3 | `/tmp/parity_test` | nvcc | Per-op numeric parity: GPU op outputs vs the golden, all 18 executable opcodes, three tolerance classes | `PARITY PASSED` |
 | 4 | `/tmp/gpu_smoke` | nvcc | End-to-end engine: graph mode, direct mode, determinism, CPU-oracle token heads, clean final device sync | `GPU SMOKE PASSED` |
+| 5 | `/tmp/gpu_slot` | nvcc | Multi-request slot teardown: A finishes → slot torn down (KV released, linear/conv state reset, block table zeroed) → B on the same slot matches a fresh engine's B stream byte-for-byte | `SLOT LIFECYCLE PASSED` |
 
-**Order matters: 1 → 2 (gate) → 3 → 4.** If step 2 fails on the GPU
+**Order matters: 1 → 2 (gate) → 3 → 4 → 5.** If step 2 fails on the GPU
 machine, stop: a later parity failure could not be attributed to the GPU
 (rebuild the golden there instead — §5.3).
 
@@ -236,7 +237,7 @@ Notes:
   deviates 2 f32 ulp (tol 1): golden ... got ...`, or
   `FAIL prefill op3 tag1: bit-exact mismatch at byte 7/128 (golden 3f, got 40)`),
   then the per-class maxima, and returns 1. Report that first-FAIL line
-  (§10).
+  (§11).
 
 ## 7. Step 3 — GPU smoke test (nvcc; end-to-end plumbing gate)
 
@@ -292,7 +293,81 @@ byte-identical (seeds are fixed in the test):
 diff /tmp/smoke1.txt /tmp/smoke2.txt && echo DETERMINISTIC
 ```
 
-## 8. Step 4 (optional) — Sanitizer sweep
+## 8. Step 4 — Slot lifecycle (nvcc; multi-request teardown gate)
+
+Verifies that a finished sequence's slot is fully torn down before the
+scheduler reuses it (KV blocks released back to the pool, linear/conv
+state reset, block-table row back to the "no block" state). Sequence A
+(40-token prompt + 40 decode = 80 context tokens, spanning two 64-token
+KV blocks) runs to completion; sequence B (5-token prompt + 12 decode)
+then runs on the slot A freed and must match B's stream on a fresh
+engine with the same seed byte-for-byte.
+
+### 8.1 Build
+```sh
+nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
+     -Iinclude -Isrc/model -Isrc/kernels -lcuda \
+     tests/host/slot_lifecycle_test.c \
+     src/engine/engine.c src/plan/plan.c \
+     src/alloc/alloc.c src/config/config.c \
+     src/core/mimfer.c src/cuda/cuda_rt.c \
+     src/cuda/cuda_mem.c src/sampling/sampling.c \
+     src/kv/kv.c src/kernels/kx.c \
+     src/model/tensor_registry.c src/rope/rope.c \
+     src/sched/sched.c \
+     src/kernels/cuda/cx.cu \
+     -o /tmp/gpu_slot
+```
+The test source lives in `tests/host/` on purpose: it is ONE shared
+source, built by nvcc as C here and by gcc for the host suite's
+`slot_lifecycle_test` (Makefile: `make gpu-slot` / `make slot-lifecycle`;
+no `-x` flags, §3.4).
+
+### 8.2 Run
+```sh
+/tmp/gpu_slot
+```
+### 8.3 Expected output
+```
+  fresh B              rounds=13 slot=0 head=[409 2 419 419 419 419 235 419]
+  reuse A (teardown)   rounds=41 slot=0 head=[14 452 433 189 266 207 201 74]
+  reuse B (same slot)  rounds=13 slot=0 head=[409 2 419 419 419 419 235 419]
+SLOT LIFECYCLE PASSED
+```
+The heads are the seed-12345 output of the built-in tiny model: the
+fresh-B and reuse-B lines must be identical to each other AND to the
+head the host suite's `slot_lifecycle_test` prints (verified 2026-09-27
+on the RTX PRO 4000 Blackwell, CUDA 13.1.115). Any change to the CPU
+reference, the engine or the test invalidates them — re-state from a
+green run (§12).
+
+### 8.4 What the binary verifies internally
+1. **Fresh case** (engine 1, seed 12345): B only — the reference
+   stream (1 prefill round + 12 decode rounds = 13 tokens, slot 0);
+2. **Reuse case** (engine 2, same seed, sequential in the same process —
+   the CUDA handle set is shut down and re-opened between the two
+   engines, the pattern §7.4's four lifecycles already rely on):
+   - A runs to completion (1 + 40 rounds, slot 0);
+   - mid-flight: at A's len-65 round the pool free count is
+     post-load − 2 (both KV blocks allocated — the two-block
+     precondition for S3);
+   - after A: the pool free count is back to the post-load value
+     (**S1 — no KV leak**) and A's whole block-table row is zero
+     (**S3 — the "no block" state**);
+   - B then runs on the slot A freed: same slot index, full 13-token
+     stream **byte-identical to the fresh-engine B stream (S2 — the
+     linear recurrence/conv state was reset)**, free count back to the
+     post-load value again, round/token counters add up.
+
+### 8.5 Independent determinism confirmation
+Same pattern as §7.5 (fixed seeds, byte-identical runs):
+```sh
+/tmp/gpu_slot > /tmp/slot1.txt 2>&1
+/tmp/gpu_slot > /tmp/slot2.txt 2>&1
+diff /tmp/slot1.txt /tmp/slot2.txt && echo DETERMINISTIC
+```
+
+## 9. Step 5 (optional) — Sanitizer sweep
 
 Deeper memory/parity sweep of the smoke binary (slower):
 ```sh
@@ -300,11 +375,11 @@ compute-sanitizer --tool memcheck /tmp/gpu_smoke
 ```
 (or the equivalent `compute-sanitizer --tool racecheck` / `initcheck`).
 Expected: the usual `GPU SMOKE PASSED` lines and an error summary of **0**.
-Any finding must be reported per §10 (first finding verbatim).
+Any finding must be reported per §11 (first finding verbatim).
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
-### 9.1 Build failures (nvcc step)
+### 10.1 Build failures (nvcc step)
 | Symptom | Cause | Action |
 |---------|-------|--------|
 | `error: unsupported gpu architecture 'compute_120'` | Toolkit < 12.8 | Upgrade to CUDA 12.8+, or (on a non-target card) use that card's `-arch` + `MIMFER_SOFT_DEVICE_GATE=1`. |
@@ -315,7 +390,7 @@ Any finding must be reported per §10 (first finding verbatim).
 | `undefined reference to cuInit` / `cuDeviceGet*` (driver API) | host has the toolkit but **no GPU driver** — the driver API (`-lcuda`) cannot resolve | Link the toolkit's driver stub: append `-L<cuda toolkit>/lib64/stubs` to the command (Makefile: `NVCC_EXTRA`, CMake: `-DMIMFER_NVCC_EXTRA`). Link-only; no codegen impact. Run the binaries on the GPU machine. |
 | `cx.cu` compile errors | toolkit-version drift or a tree edit (cx.cu is known-good on nvcc 13.1.115 as of 2026-09-26) | Report verbatim (nvcc version, full message, line number); first check `nvcc --version` matches 12.8+/13.x expectations, then treat it as a regression against the verified build. |
 
-### 9.2 Runtime failures (at engine create / load)
+### 10.2 Runtime failures (at engine create / load)
 | Symptom | Cause | Action |
 |---------|-------|--------|
 | `device gate: name "..." does not contain "RTX PRO 4000"` / `compute capability ... need 12.x` / `device gate: N GiB < required 24 GiB (5% tolerance, floor 22 GiB)` / `derived bandwidth ... outside [...]` | non-target card (test rig) or wrong device selected | `export MIMFER_SOFT_DEVICE_GATE=1` (soft gate) and/or check `CUDA_VISIBLE_DEVICES`. On the real PRO 4000, a bandwidth gate failure means the driver-reported clocks/bus differ from the ESTIMATE in `config.c` — report the logged probed values. (The VRAM check already tolerates the driver reserve — 23.4256 GiB reported on the 24 GB card — so a VRAM failure on the real card means a genuinely different card or a driver regression.) |
@@ -325,7 +400,7 @@ Any finding must be reported per §10 (first finding verbatim).
 | Graph capture error at load (`StreamEndCapture` fails, `operation not supported when stream is capturing`, …) | capture-mode illegality in the op sequence | Real engine bug: report the line, the plan being captured (prefill / decode M, greedy), and the full log. Do not work around it. |
 | `cudaMalloc(...) failed` (OOM) | VRAM occupied by another process | `nvidia-smi` — the test uses single-digit MiB; anything else holding the GPU is the cause. |
 
-### 9.3 Parity failures (`/tmp/parity_test`)
+### 10.3 Parity failures (`/tmp/parity_test`)
 1. **Check the pre-gate first:** if `par_selfcheck` does not pass on this
    machine, rebuild the golden here (§5.3) — do not debug GPU code.
 2. Read the **first FAIL line** — `FAIL <prefill | decode rN> op# tagD: …`,
@@ -347,21 +422,21 @@ Any finding must be reported per §10 (first finding verbatim).
 4. Never "fix" a parity failure by widening the tolerances in
    `tests/host/par_golden.c` — the tolerances are the gate definition.
 
-### 9.4 Smoke failures (`/tmp/gpu_smoke`)
+### 10.4 Smoke failures (`/tmp/gpu_smoke`)
 - Any `FAIL tests/cuda/gpu_smoke.c:LINE: <msg>` line identifies the check
   (the §7.4 list). Most informative: `graph and direct dispatch agree`
   (plumbing difference between the graph and per-op paths) and
   `token stream matches the CPU oracle` (numeric divergence beyond the
-  per-op gate — cross-reference §9.3).
+  per-op gate — cross-reference §10.3).
 - Non-determinism between two runs: capture both outputs, re-run under
   `compute-sanitizer --tool racecheck`, report the first finding.
 
-### 9.5 Sanitizer findings
+### 10.5 Sanitizer findings
 Report the **first finding verbatim** (error class, kernel name, line,
-address/size), the step that triggered it (§6/§7/§8), and the full summary
+address/size), the step that triggered it (§6/§7/§8/§9), and the full summary
 line. Do not re-run with different flags to make it disappear.
 
-## 10. Bug report template
+## 11. Bug report template
 
 ```
 mimfer GPU validation report
@@ -371,7 +446,7 @@ Date / machine:
   GCC:                 (gcc --version)
   MIMFER_SOFT_DEVICE_GATE: set / not set
   Probed device line from startup log:
-Step (0/1/2/3/4):  <sanity | golden | selfcheck | parity | smoke | sanitizer>
+Step (0/1/2/3/4/5):  <sanity | golden | selfcheck | parity | smoke | slot-lifecycle | sanitizer>
 Result:            PASS / FAIL
 First failing line (verbatim):
   e.g. "FAIL decode r5 op41 tag2: element 1024/5120 deviates 2 f32 ulp (tol 1): golden 0.75 got 0.75390625"
@@ -381,7 +456,7 @@ Per-class maxima (parity):
 Sanitizer summary line (if applicable):
 ```
 
-## 11. Hard invariants (do not "fix")
+## 12. Hard invariants (do not "fix")
 
 - `-fmad=false` on all GPU builds; the CPU oracle stays FMA-free.
 - `extern "C"` guards in `include/mimfer/kernels.h` and `src/kernels/kx.h`

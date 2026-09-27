@@ -1,9 +1,9 @@
 # VALIDATION_CHECKLIST.md — First GPU Validation Go/No-Go
 
 Run top to bottom on the GPU machine. Commands: full form in
-`GPU_VALIDATION.md` (§5–§8); `NVCC_ARCH` = `-arch=sm_120` (or the arch of
+`GPU_VALIDATION.md` (§5–§9); `NVCC_ARCH` = `-arch=sm_120` (or the arch of
 the actual card). If any item fails: **stop**, capture evidence per
-`GPU_VALIDATION.md` §10, report — do not continue past a failed gate.
+`GPU_VALIDATION.md` §11, report — do not continue past a failed gate.
 
 **Pass condition: every box checked. First failing item = the finding.**
 
@@ -18,9 +18,9 @@ the actual card). If any item fails: **stop**, capture evidence per
 ## Gate 0 — Host oracle pre-gate (no GPU needed)
 - [ ] **full host suite green** — `make test` from the repo root prints
       `HOST TEST SUITE PASSED` (plan_test, rope_test, flags_test,
-      device_gate_test, engine_smoke, engine_features, parity self-check —
-      the feature surface, including the device-gate VRAM tolerance, is
-      covered before any GPU work)
+      device_gate_test, engine_smoke, engine_features, slot_lifecycle_test,
+      parity self-check — the feature surface, including the device-gate
+      VRAM tolerance, is covered before any GPU work)
 - [ ] **build succeeds** — `par_golden` + `par_selfcheck` compile clean
       (`-Wall -Wextra -Werror`, zero diagnostics)
 - [ ] `/tmp/par_golden /tmp/par_golden.bin` prints
@@ -57,6 +57,27 @@ the actual card). If any item fails: **stop**, capture evidence per
   `long:  head=[127 230 247 387 485 327 294 387]`
 - [ ] round counts as expected: `rounds=17` (short), `rounds=71` (long)
 
+## Gate 2.5 — Slot lifecycle (multi-request teardown)
+- [ ] **gpu_slot builds** (nvcc, verbatim command `GPU_VALIDATION.md` §8.1;
+      one shared source with the host `slot_lifecycle_test`)
+- [ ] **gpu_slot passes** — `/tmp/gpu_slot` prints `SLOT LIFECYCLE PASSED`
+- [ ] **S1: no KV leak** — after A (80 context tokens, two KV blocks)
+      completes, the pool free-block count is back to the post-load value
+      (asserted internally; a FAIL line names the missing blocks)
+- [ ] **S2: clean reuse** — B's 13-token stream on the slot A freed is
+      byte-identical to the fresh-engine B stream (`fresh B` and
+      `reuse B` lines identical in the output)
+- [ ] **S3: clean block table** — A's entire block-table row is zeroed
+      after teardown (the "no block" state; the CPU kernels read exactly
+      this mirror on the host build)
+- [ ] **deterministic results verified** — two runs of `/tmp/gpu_slot`
+      diff clean (`§8.5`)
+- [ ] token heads match the host-suite oracle —
+  `fresh B: head=[409 2 419 419 419 419 235 419]`,
+  `reuse A: head=[14 452 433 189 266 207 201 74]`
+- [ ] round counts as expected: `rounds=13` (fresh B), `rounds=41`
+      (reuse A: 1 prefill + 40 decode), `rounds=13` (reuse B)
+
 ## Gate 3 — Cleanliness
 - [ ] **no CUDA runtime errors** — no `cuda: <api> (line N): <err>` log
       lines (the soft warning `node window rejected ... continuing without
@@ -66,6 +87,6 @@ the actual card). If any item fails: **stop**, capture evidence per
       and still prints `GPU SMOKE PASSED`
 
 ## Sign-off
-- [ ] evidence recorded (outputs verbatim) per `GPU_VALIDATION.md` §10
+- [ ] evidence recorded (outputs verbatim) per `GPU_VALIDATION.md` §11
 - [ ] probed device startup line recorded (`device: <name> (sm_12x, ...`)
 - [ ] verdict: **PASS** (all gates) / **FAIL** (first failing item + evidence)

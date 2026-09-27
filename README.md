@@ -156,7 +156,7 @@ system. What the codebase is trying to keep:
 **Build.** The canonical build system is the root `Makefile` (GNU Make):
 `make` builds all host targets into `build/`, `make test` runs the full
 host suite sequentially, `make cuda` builds the GPU test binaries.
-`CMakeLists.txt` is a parity build (same 7 host binaries, same flags,
+`CMakeLists.txt` is a parity build (same 9 host binaries, same flags,
 CMake 3.16+ / Ninja) with optional CUDA: `-DMIMFER_ENABLE_CUDA=ON`
 (`-DMIMFER_NVCC_EXTRA` for driverless link-stub hosts); its default target
 stays host-only, `--target cuda` builds the GPU binaries. Every target is
