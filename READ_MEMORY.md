@@ -5,8 +5,10 @@
 > changes.
 >
 > **Last updated:** 2026-09-27 (GPU parity + smoke VERIFIED on the RTX PRO 4000
-> Blackwell — `PARITY PASSED` + `GPU SMOKE PASSED`; fixes committed on
-> `bugfix/kv-index-ima`; merge + the device-gate VRAM bug are next):
+> Blackwell — `PARITY PASSED` + `GPU SMOKE PASSED`; the device-gate VRAM bug
+> is FIXED and re-verified on silicon WITHOUT the bypass — hard gate
+> `mm_device_check ok (target profile matched)`; fix committed on
+> `bugfix/vram-gate-tolerance`; merging both bugfix branches is next):
 > (1) GPUs: 2× NVIDIA RTX PRO 4000 Blackwell, PCI 0000:05:00.0 +
 > 0000:06:00.0, kernel module 595.71.05; container userspace driver libs
 > 595.91.07 (apt nvidia-utils-595) — nvidia-smi reports an NVML
@@ -43,12 +45,19 @@
 > `CUDA_VISIBLE_DEVICES=1 MIMFER_SOFT_DEVICE_GATE=1`. Host suite green;
 > `par_golden` regenerated after the KV fix (pool layout moved, values
 > and sampled heads unchanged). Committed on `bugfix/kv-index-ima`
-> (3 commits). NEXT: merge to main (human gate), fix the device-gate
-> VRAM bug (23 < 24 GiB), the pinned-ctrl H2D design cleanup, then
-> Blackwell optimizations (each must re-pass parity)
+> (3 commits). DEVICE-GATE VRAM BUG FIXED 2026-09-27: the driver reports
+> 23.4256 GiB (2.39% below nominal) on the 24 GB card (driver/firmware
+> reserve — verified with a driver-API probe); the gate now tolerates up
+> to 5% below nominal (`MM_VRAM_TOLERANCE_PCT`) + regression test
+> `device_gate_test` (host suite green under Make AND CMake); silicon
+> re-run WITHOUT the bypass: `mm_device_check ok (target profile
+> matched)`, `GPU SMOKE PASSED` + `PARITY PASSED` (identical bit-exact
+> results). Committed on `bugfix/vram-gate-tolerance`. NEXT: merge both
+> bugfix branches to main (human gate), the pinned-ctrl H2D design
+> cleanup, then Blackwell optimizations (each must re-pass parity)
 > **Project health:** GREEN (host) · GPU execution VERIFIED (parity + smoke PASSED on sm_120)
 > **Host correctness:** VERIFIED · **Memory safety:** VERIFIED · **Determinism:** VERIFIED
-> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** VERIFIED 2026-09-27 — `PARITY PASSED` (2,009,422/2,009,424 elements bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph == direct); run-2 blockers fixed (NULL `g_dev` dst, KV block-id IMA); device gate 23<24 GiB still bypassed via `MIMFER_SOFT_DEVICE_GATE=1` (open bug)
+> **GPU build:** VERIFIED (real nvcc 13.1.115, sm_120 fatbin inspected, zero warnings) · **GPU execution:** VERIFIED 2026-09-27 — `PARITY PASSED` (2,009,422/2,009,424 elements bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph == direct); run-2 blockers fixed (NULL `g_dev` dst, KV block-id IMA); device-gate VRAM bug FIXED 2026-09-27 (5% tolerance `MM_VRAM_TOLERANCE_PCT` + `device_gate_test`) and re-verified on silicon WITHOUT `MIMFER_SOFT_DEVICE_GATE` (hard gate `mm_device_check ok (target profile matched)`)
 > **External validation pack:** COMPLETE (GPU_VALIDATION.md runbook, VALIDATION_CHECKLIST.md go/no-go, RELEASE_READINESS.md status/risks)
 > **Build system:** COMPLETE — Makefile (canonical) + CMakeLists.txt (parity, optional CUDA via `-DMIMFER_ENABLE_CUDA=ON`); both verified end-to-end 2026-09-26
 
@@ -82,7 +91,8 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | Project governance: .clinerules (mandatory rules), .gitignore, git repo initialized (main) |
 | [COMPLETE] | Canonical build system: root Makefile (GNU Make only) — host + CUDA build rules, `make` / `make test` / `make cuda` / `make help` / `make clean` / `make distclean`; artifacts in `build/` |
 | [COMPLETE] | Final build audit (2026-09-26): `BUILD_AUDIT.md` (findings B1–B10, conformance matrix, evidence), `SOURCE_TREE.md` (annotated file inventory), `MODULE_DEPENDENCIES.md` (include graph + module map); two critical GPU-link defects fixed (B1, B10) |
-| [COMPLETE] | GPU execution of parity + smoke tests — VERIFIED on silicon 2026-09-27 (RTX PRO 4000 Blackwell, sm_120, CUDA 13.1.115, driver 595.71.05): `PARITY PASSED` (1564 ops / 2,009,424 elements, 2,009,422 bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph+direct). Run-2 blockers fixed on `bugfix/kv-index-ima`: D2H scratch `buf_grow` (§6.7), 1-based KV block-id indexing = the IMA root cause (§6.5), host-supplied LIN decay (§6.6); temporary instrumentation removed. Device gate 23<24 GiB still bypassed (open bug) |
+| [COMPLETE] | GPU execution of parity + smoke tests — VERIFIED on silicon 2026-09-27 (RTX PRO 4000 Blackwell, sm_120, CUDA 13.1.115, driver 595.71.05): `PARITY PASSED` (1564 ops / 2,009,424 elements, 2,009,422 bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph+direct). Run-2 blockers fixed on `bugfix/kv-index-ima`: D2H scratch `buf_grow` (§6.7), 1-based KV block-id indexing = the IMA root cause (§6.5), host-supplied LIN decay (§6.6); temporary instrumentation removed. Device-gate VRAM bug fixed 2026-09-27 (5% tolerance + `device_gate_test` regression, §6.8) and re-verified on silicon WITHOUT the bypass (hard gate `mm_device_check ok (target profile matched)`) |
+| [COMPLETE] | Device-gate VRAM tolerance — `mm_device_check` accepts the driver-reported total within 5% below nominal (the 24 GB card reports 23.4256 GiB, measured 2026-09-27) + `device_gate_test` regression (host suite, both build systems); silicon re-run without `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively |
 | [PENDING]  | Blackwell Optimizations |
 
 Note: the CUDA execution path is written in full — `src/cuda/cuda_rt.c`
@@ -163,6 +173,8 @@ docs/             dflash2.md        — declared scope of the speculative-decodi
                                       surface (planned; scaffolding only)
 tests/host/       plan_test.c, engine_smoke.c, rope_test.c (RoPE tables vs reference
                   formula), flags_test.c (full CLI grammar + cross-field rules),
+                  device_gate_test.c (device-gate policy: VRAM tolerance
+                  regression-anchored to the measured driver value 23.4256 GiB),
                   engine_features_test.c (e2e YaRN table reach + spec/vision
                   refusals), par_golden.c (golden writer), par_selfcheck.c (thin
                   wrapper: #includes tests/cuda/parity_test.c, one shared
@@ -388,6 +400,7 @@ nvcc -O2 -fmad=false -DMM_WITH_CUDA -arch=sm_120 \
 - Two gate failures found and fixed during this run (see §6.5–§6.7): the KV block-id IMA (which aborted every previous run at prefill op81, before any decode comparison) and the LIN decay constant (device `expf` 1 f32 ulp off glibc; compounded over the recurrence; now host-supplied).
 - `build/par_golden.bin` was REGENERATED after the KV index fix (the fix moves pool bytes, not values — sampled-token heads are unchanged, so the `gpu_smoke` hardcoded oracles stayed valid).
 - `compute-sanitizer` is still unavailable in the local toolkit (see the §4.6 note) — the parity gate is the numeric verifier.
+- Re-run 2026-09-27 AFTER the device-gate VRAM fix (§6.8), WITHOUT `MIMFER_SOFT_DEVICE_GATE`: hard gate `mm_device_check ok (target profile matched)`, `GPU SMOKE PASSED` (both oracle heads, `rounds=17`/`rounds=71`) + `PARITY PASSED` (2,009,422/2,009,424 bit-exact — identical to the bypassed run). Probe line: `NVIDIA RTX PRO 4000 Blackwell (sm_120, 70 SMs, 23 GiB, 672 GB/s derived, l2 48 MiB, smem/SM 100 KiB)` — derived bandwidth exactly 672 GB/s; L2 reports 48 MiB vs the 96 MiB ESTIMATE (soft check, log-only, never fatal).
 
 ### 4.7 Canonical builds: the root `Makefile` (GNU Make) + `CMakeLists.txt` (parity; VERIFIED 2026-09-26)
 
@@ -510,6 +523,22 @@ explicitly NOT ignored.
   rounds when RoPE changes, so the e2e assertion is on the rotated `q`
   buffer, not on the token stream.
 
+### device_gate_test — PASS (device gate, host; 2026-09-27)
+
+- `mm_device_check` policy against `MM_TARGET_PRO4000`, no CUDA needed
+  (pure: probed `mm_dev_info` + target profile). Wired into `make test`,
+  the CMake `test` target and `scripts/run_host_tests.sh` (both build
+  systems verified end-to-end 2026-09-27).
+- **VRAM regression anchor:** the measured driver value on silicon
+  (25,153,044,480 bytes = 23.4256 GiB, driver 595.71.05) must PASS —
+  before the fix the gate rejected the target card itself and every GPU
+  run needed `MIMFER_SOFT_DEVICE_GATE=1`. Boundary semantics: exactly at
+  the 5%-below floor passes (inclusive), one byte below fails; above
+  nominal passes (the gate is a lower bound).
+- Name/CC/bandwidth: non-matching name rejected; cc 9.0 / 13.0 rejected,
+  12.1 accepted; derived bandwidth at −10% passes (inclusive), above
+  +10% and far-off nominal rejected.
+
 ### par_golden — PASS (golden writer)
 
 - Writes `/tmp/par_golden.bin` (magic `MMPAR001`, ~3.8 MB): 1 prefill + 16
@@ -534,8 +563,10 @@ explicitly NOT ignored.
   observables, 2,009,424 elements, 2,009,422 bit-exact. Class-1 (bf16):
   max 1.000 ulp on 2 elements (gate: 1). Class-2 (f32): max 0 ulp — the
   DeltaNet linear-attention state is bit-exact after the host-supplied
-  decay fix (§6.6). Run with `MIMFER_SOFT_DEVICE_GATE=1` (open VRAM-gate
-  bug).
+  decay fix (§6.6). First run with `MIMFER_SOFT_DEVICE_GATE=1` (the
+  open VRAM-gate bug); re-run 2026-09-27 WITHOUT the bypass after the
+  §6.8 fix: identical `PARITY PASSED` (2,009,422 bit-exact), hard gate
+  `mm_device_check ok (target profile matched)`.
 - Gate failures found and fixed on this run: KV block-id indexing IMA
   (§6.5) and the LIN decay constant (§6.6); the D2H scratch growth fix
   (§6.7) unblocked the readbacks.
@@ -546,6 +577,9 @@ explicitly NOT ignored.
   reference (short: `[451 20 430 317 0 152 24 414]`, long:
   `[127 230 247 387 485 327 294 387]`), graph mode == direct mode,
   deterministic, clean device syncs.
+- Re-run 2026-09-27 WITHOUT `MIMFER_SOFT_DEVICE_GATE` after the device-gate
+  VRAM fix (§6.8): hard gate `mm_device_check ok (target profile matched)`
+  + the same `GPU SMOKE PASSED` (both oracle heads, `rounds=17`/`rounds=71`).
 
 ### Sanitizer results
 
@@ -659,6 +693,42 @@ explicitly NOT ignored.
   the copy (mirrors the host variant); the scratch persists for the run
   and keeps the max size seen — no per-readback realloc churn.
 
+### 6.8 `src/config/config.c` — `mm_device_check()` VRAM gate — FIXED (2026-09-27)
+
+- **Issue:** the device gate required `vram_bytes >= 24 GiB` nominal, but
+  the driver-reported `totalGlobalMem` on the 24 GB RTX PRO 4000 is
+  25,153,044,480 bytes = 23.4256 GiB — 2.39% below nominal (the
+  driver/firmware reserves part of the card; verified 2026-09-27 with a
+  driver-API probe, driver 595.71.05, both devices of the pair). The
+  target card failed its own gate (`device gate: 23 GiB < required
+  24 GiB`) and every GPU run needed the `MIMFER_SOFT_DEVICE_GATE=1`
+  bypass. Not a profile mismatch and not a reporting bug: the driver
+  total is simply the addressable (post-reserve) memory.
+- **Resolution:** the gate now accepts up to `MM_VRAM_TOLERANCE_PCT` (5%)
+  below the nominal `vram_bytes` (floor computed once in `size_t`,
+  inclusive; no overflow at 64-bit). The constant + the measured anchor
+  are documented in `include/mimfer/config.h`; the failure log now shows
+  the tolerance and the floor. Regression: `tests/host/device_gate_test.c`
+  (wired into `make test`, the CMake `test` target, and
+  `scripts/run_host_tests.sh`): measured value passes, floor boundary is
+  inclusive, floor−1 / wrong name / wrong cc / off-nominal bandwidth are
+  rejected.
+- **Silicon verification (2026-09-27, WITHOUT the bypass):**
+  `CUDA_VISIBLE_DEVICES=1 build/gpu_smoke` → `mm_device_check ok (target
+  profile matched)` + `GPU SMOKE PASSED` (both oracle heads,
+  `rounds=17`/`rounds=71`); `build/parity_test build/par_golden.bin` →
+  `PARITY PASSED` (2,009,422/2,009,424 bit-exact — identical to the
+  bypassed run). Probe line: `NVIDIA RTX PRO 4000 Blackwell (sm_120, 70
+  SMs, 23 GiB, 672 GB/s derived, l2 48 MiB, smem/SM 100 KiB)` — derived
+  bandwidth exactly 672 GB/s (the ESTIMATE held); L2 reports 48 MiB vs
+  the 96 MiB ESTIMATE (soft check, log-only, never fatal — keep watching
+  under production load).
+- **Docs updated:** GPU_VALIDATION.md (header state, §3.2, §3.3 item 4,
+  troubleshooting), VALIDATION_CHECKLIST.md (Gate 0 suite list),
+  RELEASE_READINESS.md (R4, A5 — closed), README.md (hardware scope),
+  Makefile + CMakeLists.txt + `scripts/run_host_tests.sh` (new test
+  stage). Committed on `bugfix/vram-gate-tolerance`.
+
 ---
 ## 7. Next Priority
 
@@ -685,20 +755,22 @@ regenerated (pool layout moved, values and sampled heads unchanged).
 Committed on branch `bugfix/kv-index-ima` (3 commits: KV index fix,
 decay fix, instrumentation cleanup + D2H scratch).
 
-**NEXT TASK: merge `bugfix/kv-index-ima`, then fix the device-gate VRAM bug**
-(1) the branch holds the three verified commits — merge per the branch
-rules (the repo has no `develop` branch yet; merging to `main` is a
-human gate); (2) the device gate reports `23 GiB < required 24 GiB` on
-the 24 GB card (driver 595.71.05 reports ~23.x GiB total) — verify the
-gate arithmetic / the 24-GiB constant against driver-reported total
-memory and stop relying on `MIMFER_SOFT_DEVICE_GATE=1`; (3) the
-pinned-block ctrl design: `e->ctrl_dev` points into the pinned host
-block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (kernels
-read it zero-copy) — driver-tolerated; make it an explicit host memcpy
-or a real device buffer; (4) then Blackwell optimizations (FMA /
-tensor-core paths) — each MUST re-pass the parity test (§4.6);
-(5) optional `compute-sanitizer` sweep once a toolkit that includes it
-is available.
+**NEXT TASK: merge both bugfix branches, then the pinned-ctrl H2D cleanup**
+(1) `bugfix/kv-index-ima` (KV index fix, decay fix, instrumentation
+cleanup + D2H scratch) and `bugfix/vram-gate-tolerance` (device-gate VRAM
+tolerance + `device_gate_test` regression) hold the verified commits —
+merge per the branch rules (the repo has no `develop` branch yet; merging
+to `main` is a human gate); (2) DONE — the device-gate VRAM bug (driver
+reports 23.4256 GiB < 24 GiB nominal on the 24 GB card): fixed with the
+5% tolerance (`MM_VRAM_TOLERANCE_PCT`) + regression test, and the target
+card now passes the hard gate natively on silicon (no
+`MIMFER_SOFT_DEVICE_GATE`, §6.8); (3) the pinned-block ctrl design:
+`e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an
+H2D `cudaMemcpyAsync` into it (kernels read it zero-copy) —
+driver-tolerated; make it an explicit host memcpy or a real device
+buffer; (4) then Blackwell optimizations (FMA / tensor-core paths) — each
+MUST re-pass the parity test (§4.6); (5) optional `compute-sanitizer`
+sweep once a toolkit that includes it is available.
 
 Entry points:
 - **`GPU_VALIDATION.md`** — the complete runbook (machine requirements,
@@ -755,13 +827,13 @@ CUDA incrementally.
 | CUDA runtime + kernels | COMPILED (real nvcc 13.1.115, driverless, 2026-09-26) — runtime layer, device mem, cx.cu launch set; sm_120 fatbin inspected via cuobjdump (all 14 kernels present, zero warnings); graph-capture-legal, round-boundary I/O wired; SILICON-VERIFIED 2026-09-27 (parity PASSED + smoke PASSED on sm_120) |
 | Parity tooling | COMPLETE + host-VERIFIED (par_golden golden writer; parity_test dual-buildable; self-check passes bit-exact) |
 | GPU smoke test | GPU-VERIFIED 2026-09-27 (graph vs direct, oracle heads match the host reference, reproducible tokens) |
-| Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template; all link sets include `src/rope/rope.c`), VALIDATION_CHECKLIST.md (go/no-go; Gate 0 requires `make test` green), RELEASE_READINESS.md (status/risks/audit incl. the new feature rows), docs/dflash2.md (declared speculative-decoding scope); 2026-09-26 |
+| Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template; all link sets include `src/rope/rope.c`), VALIDATION_CHECKLIST.md (go/no-go; Gate 0 requires `make test` green), RELEASE_READINESS.md (status/risks/audit incl. the new feature rows; R4 VRAM defect fixed + A5 gate-pass verified 2026-09-27), docs/dflash2.md (declared speculative-decoding scope); 2026-09-26 (gate sections re-synced 2026-09-27) |
 | README | COMPLETE — README.md: Current Model Support (two NInfer Qwen3.8-27B reference models only), Current Artifact Support (NInfer Artifact V2/V3), Hardware Scope (RTX PRO 4000 Blackwell only; soft-gate is a testing affordance), **Engine & CLI Feature Surface** (flag-by-flag status table: wired / validated scaffolding / validated hook), Extensibility (suckless-inspired, architecture influence not code dependency); 2026-09-26 |
-| Feature surface | COMPLETE (host) — RoPE tables (`src/rope/rope.c`, plain + YaRN; plain bit-identical to legacy formula so the golden is unchanged), CLI flag grammar (`src/flags/flags.c`), weights profiles + `mm_engine_cfg_validate` cross-field rules (`src/config/`), `--spec`/`--vision` gates in `mm_engine_load`; tests: `rope_test`, `flags_test`, `engine_features_test` (e2e YaRN q-buffer difference vs plain, plain byte-identical, spec/vision refusals); declared speculative scope: docs/dflash2.md; 2026-09-26 |
-| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26 |
-| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (7 host bins in `build/`), `make test` (6-stage sequential host suite, fail-fast: plan → rope → flags → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 7 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
+| Feature surface | COMPLETE (host) — RoPE tables (`src/rope/rope.c`, plain + YaRN; plain bit-identical to legacy formula so the golden is unchanged), CLI flag grammar (`src/flags/flags.c`), weights profiles + `mm_engine_cfg_validate` cross-field rules (`src/config/`), `--spec`/`--vision` gates in `mm_engine_load`; tests: `rope_test`, `flags_test`, `device_gate_test` (device-gate policy; VRAM tolerance regression-anchored to the measured 23.4256 GiB), `engine_features_test` (e2e YaRN q-buffer difference vs plain, plain byte-identical, spec/vision refusals); declared speculative scope: docs/dflash2.md |
+| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26; 2026-09-27: `bugfix/kv-index-ima` fast-forward merged into `main` (tip cf473e3), `bugfix/vram-gate-tolerance` branch created for the device-gate VRAM fix + `device_gate_test` (pending merge) |
+| Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (8 host bins in `build/`), `make test` (7-stage sequential host suite, fail-fast: plan → rope → flags → device-gate → engine-smoke → engine-features → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 8 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
 | Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
 | GPU execution | RUN 2 (2026-09-26, RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05): engine create+load PASS — run-1's opacity blockers (inverted `mm_log` filter; unlogged failure paths) are fixed and held. `mm_device_check` gate now visibly fails on VRAM: `device gate: 23 GiB < required 24 GiB` — SEPARATE known bug, deferred; `MIMFER_SOFT_DEVICE_GATE=1` bypasses it. New failure: first D2H observable readback — `E cuda_rt.c:113` (CK in `mm_d2h_async`) + `E parity_test.c:322` + `E parity_test.c:528`: `cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, g_st[st])` → invalid argument. ROOT CAUSE (static analysis, high confidence): the D2H readback scratch `g_dev` (parity_test.c:296) is never allocated in the CUDA build — only the host `d2h()` calls `buf_grow()` — so the first copy passes dst=NULL. D2H path instrumented (temporary, remove after fix): `mm_d2h_async` (cuda_rt.c) logs dst/src/bytes/raw-stream+id + `cudaPointerGetAttributes` class per endpoint before every copy; the three call sites (per-op observable, pool dump, `fetch_tok`) log readback context. CUDA 13.1 C-API nits fixed in the instrumentation: `struct cudaPointerAttributes` (no C typedef), runtime `cudaMemoryType` has no `Unifiable` member. Re-verified: `make test` green; `make gpu-parity` + `make gpu-smoke` from clean with real nvcc 13.1.115, zero warnings. RUNS 3–4 (2026-09-27, same hardware, executed DIRECTLY FROM vibe-workspace — no ai-dev needed): root cause SILICON-CONFIRMED — rebuilt `build/parity_test build/par_golden.bin` (fresh local nvcc build, direct dispatch) printed `W cuda_rt.c:136: d2h_async: dst=(nil) class=unregistered src=... class=device bytes=512` before the `invalid argument` (two stable runs). Direct-dispatch kernels (k_embed + prefill ops) launch AND sync clean on real Blackwell (70 SMs, 23.43 GiB card, 672 GB/s). NEW BUG: `gpu_smoke` graph mode (no_graph=0) — first graph-launch stream sync → `E cx.cu:90: stream sync: an illegal memory access was encountered` (mm_kx_invoke, prefill); fault taints the context (every later `cudaStreamCreateWithFlags` fails with the same IMA); direct dispatch does NOT IMA → graph capture/replay path suspected. Environment: CUDA dev0 = PCI 0000:05:00.0 (/dev/nvidia1) BUSY (ctx create → OOM, VRAM held by an external workload, presumably ai-dev); CUDA dev1 = PCI 0000:06:00.0 (/dev/nvidia0) FREE (23.43 GiB total, ~23.2 GiB free) → always `CUDA_VISIBLE_DEVICES=1`; userspace driver libs 595.91.07 vs kernel 595.71.05 — nvidia-smi NVML mismatch only, CUDA driver API fully functional (probe: cuInit, enumeration, context, H2D/D2H round-trip verified); local toolkit /home/razvijalec/tools/cuda/usr/local/cuda-13.1 (real nvcc V13.1.115, NO compute-sanitizer); `make cuda NVCC=<that path>/nvcc` builds both GPU binaries from clean. NEXT: one-line `buf_grow` fix in the CUDA `d2h()` (separate commit), then strip instrumentation, then local re-run. ALL DONE 2026-09-27 — RUN 5: `PARITY PASSED` (1564 ops, 2,009,424 elements, 2,009,422 bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph+direct); the "graph-mode IMA" was not a graph bug (1-based KV block-id indexing, §6.5) and the fix-unblocked decay gate failure (§6.6) was fixed host-side; `par_golden` regenerated; temporary instrumentation removed; committed on `bugfix/kv-index-ima` (3 commits) |
-| Recommended next step | (1) merge `bugfix/kv-index-ima` (3 verified commits) per the branch rules — human gate for main (no `develop` branch exists yet); (2) fix the device-gate VRAM bug (gate says 23 GiB < required 24 GiB on a 24 GB card — verify the constant/comparison against driver-reported total memory, then drop the `MIMFER_SOFT_DEVICE_GATE=1` bypass from the runbook); (3) the pinned-ctrl H2D design (H2D into a pinned host dst — driver-tolerated; make it explicit); (4) Blackwell optimizations (FMA / tensor-core) — each MUST re-pass the parity test; (5) `compute-sanitizer` sweep once a toolkit with it is available |
+| Recommended next step | (1) merge `bugfix/kv-index-ima` (3 verified commits) + `bugfix/vram-gate-tolerance` (device-gate VRAM fix + `device_gate_test`) per the branch rules — human gate for main (no `develop` branch exists yet); (2) DONE — device-gate VRAM bug fixed 2026-09-27 (5% tolerance `MM_VRAM_TOLERANCE_PCT` + `device_gate_test`; silicon re-run WITHOUT the bypass: hard gate `mm_device_check ok`, `GPU SMOKE PASSED` + `PARITY PASSED`; runbook updated); (3) the pinned-ctrl H2D design (H2D into a pinned host dst — driver-tolerated; make it explicit); (4) Blackwell optimizations (FMA / tensor-core) — each MUST re-pass the parity test; (5) `compute-sanitizer` sweep once a toolkit with it is available |
 | Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry written but unintegrated — all three pass `-fsyntax-only` under the exact release flags (not latent breakage); **no missing headers, no dead sources** (every TU registered, or the 3 above); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
-| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). Silicon: run 1 failed at `mm_engine_create` (root cause: inverted `mm_log` filter — FIXED, kept permanently); run 2 (soft device gate) passes create+load and fails at the first D2H readback — root cause identified statically (NULL `g_dev` dst; the pre-copy instrumentation will confirm on silicon), one-line fix pending. OPEN BUGS: (1) device-gate VRAM check `23 GiB < required 24 GiB` on the RTX PRO 4000 — verify the gate arithmetic against driver-reported total memory (driver 595.71.05 reports ~23.x GiB on a 24 GB card, so the 24-GiB requirement or the comparison may itself be wrong); (2) the pinned-block ctrl design — `e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (the kernels read `e->ctrl_dev` directly, zero-copy); run 2's H2D calls returned success, but that is driver-dependent behavior for a host dst + H2D kind — make it an explicit host memcpy or a real device buffer once the D2H path is cleared. Temporary instrumentation REMOVED 2026-09-27 (committed on `bugfix/kv-index-ima`); the run-2 IMA root cause (KV block-id indexing) and the LIN decay gate failure are fixed and silicon-verified. Remaining risks: (1) the VRAM gate arithmetic, (2) the pinned-ctrl H2D design, (3) optimization passes (each must re-pass parity) |
+| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). Silicon: run 1 failed at `mm_engine_create` (root cause: inverted `mm_log` filter — FIXED, kept permanently); run 2 (soft device gate) passes create+load and fails at the first D2H readback — root cause identified statically (NULL `g_dev` dst; the pre-copy instrumentation will confirm on silicon), one-line fix pending. OPEN BUGS: the pinned-block ctrl design — `e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (the kernels read `e->ctrl_dev` directly, zero-copy); run 2's H2D calls returned success, but that is driver-dependent behavior for a host dst + H2D kind — make it an explicit host memcpy or a real device buffer once the D2H path is cleared. Temporary instrumentation REMOVED 2026-09-27 (committed on `bugfix/kv-index-ima`); the run-2 IMA root cause (KV block-id indexing) and the LIN decay gate failure are fixed and silicon-verified. RESOLVED 2026-09-27: the device-gate VRAM bug — the driver reports 23.4256 GiB (2.39% below nominal) on the 24 GB card (driver/firmware reserve, measured with a driver-API probe); the gate now tolerates up to 5% below nominal (`MM_VRAM_TOLERANCE_PCT`) + `device_gate_test` regression; silicon re-run WITHOUT `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively (`mm_device_check ok (target profile matched)`, `GPU SMOKE PASSED` + `PARITY PASSED`; §6.8). Remaining risks: (1) the pinned-ctrl H2D design, (2) optimization passes (each must re-pass parity) |

@@ -18,8 +18,9 @@ the actual card). If any item fails: **stop**, capture evidence per
 ## Gate 0 — Host oracle pre-gate (no GPU needed)
 - [ ] **full host suite green** — `make test` from the repo root prints
       `HOST TEST SUITE PASSED` (plan_test, rope_test, flags_test,
-      engine_smoke, engine_features, parity self-check — the feature
-      surface is covered before any GPU work)
+      device_gate_test, engine_smoke, engine_features, parity self-check —
+      the feature surface, including the device-gate VRAM tolerance, is
+      covered before any GPU work)
 - [ ] **build succeeds** — `par_golden` + `par_selfcheck` compile clean
       (`-Wall -Wextra -Werror`, zero diagnostics)
 - [ ] `/tmp/par_golden /tmp/par_golden.bin` prints

@@ -75,10 +75,13 @@ hardware configuration targeted during development. Performance
 characteristics outside this configuration are currently unknown, and no
 support is claimed for hardware that has not been validated.
 
-The engine enforces the device profile at startup as a hard gate. A soft-gate
-environment variable (`MIMFER_SOFT_DEVICE_GATE`) allows starting on other
-NVIDIA GPUs for validation work — that is a testing affordance, not a support
-statement.
+The engine enforces the device profile at startup as a hard gate (the VRAM
+check tolerates the driver-reported total sitting slightly below the
+datasheet nominal — the driver/firmware reserves part of every card). The
+target card passes the gate natively (verified on silicon 2026-09-27). A
+soft-gate environment variable (`MIMFER_SOFT_DEVICE_GATE`) allows starting
+on other NVIDIA GPUs for validation work — that is a testing affordance,
+not a support statement.
 
 ## Engine & CLI Feature Surface
 

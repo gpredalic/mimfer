@@ -13,8 +13,11 @@
 > verified. The CUDA path (`src/cuda/`, `src/kernels/cuda/cx.cu`) is written
 > and now **compiles and links against the real CUDA 13.1 toolkit**
 > (nvcc 13.1.115, driverless build via toolkit link stubs — 2026-09-26,
-> both build systems); it has not yet been **run on silicon**. The runbook
-> below is ordered so any failure is attributable to exactly one layer.
+> both build systems). **Run on silicon 2026-09-27:** `PARITY PASSED` +
+> `GPU SMOKE PASSED` on the RTX PRO 4000 Blackwell under the hard device
+> gate (no soft-gate bypass) after the VRAM tolerance fix (§3.3 item 4).
+> The runbook below remains the procedure for (re-)validation; it is
+> ordered so any failure is attributable to exactly one layer.
 
 ---
 
@@ -60,8 +63,9 @@ all substitutable).
 ### 3.2 Environment variables
 - **`MIMFER_SOFT_DEVICE_GATE`** (any value, e.g. `=1`) — downgrades the hard
   device-profile gate (§3.3) to a warning. **Required on any GPU that is not
-  the target card** (test rig); not needed on a real RTX PRO 4000 Blackwell.
-  (`src/engine/engine.c:361`)
+  the target card** (test rig); not needed on a real RTX PRO 4000 Blackwell,
+  which passes the hard gate natively (verified on silicon 2026-09-27 after
+  the VRAM tolerance fix, §3.3 item 4). (`src/engine/engine.c:361`)
 - Nothing else is read from the environment.
 
 ### 3.3 Device gate (checked at `mm_engine_create`, MM_WITH_CUDA builds)
@@ -69,7 +73,11 @@ Hard checks (fail → `MM_ERR_DEVICE`, engine is not created):
 1. at least one CUDA device visible (`cudaGetDeviceCount`);
 2. device name contains `"RTX PRO 4000"`;
 3. compute capability 12.x (12.0 or 12.1);
-4. total VRAM ≥ 24 GiB;
+4. total VRAM within 5% below 24 GiB (`MM_VRAM_TOLERANCE_PCT`): the
+   driver-reported total sits below the datasheet nominal — the
+   driver/firmware reserves part of the card (the 24 GB card reports
+   25,153,044,480 bytes = 23.4256 GiB, measured 2026-09-27, driver
+   595.71.05);
 5. derived bandwidth (driver `memoryClockRate × memoryBusWidth × 2`) within
    ±10 % of 672 GB/s.
 
@@ -310,7 +318,7 @@ Any finding must be reported per §10 (first finding verbatim).
 ### 9.2 Runtime failures (at engine create / load)
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `device gate: name "..." does not contain "RTX PRO 4000"` / `compute capability ... need 12.x` / `VRAM < required 24 GiB` / `derived bandwidth ... outside [...]` | non-target card (test rig) or wrong device selected | `export MIMFER_SOFT_DEVICE_GATE=1` (soft gate) and/or check `CUDA_VISIBLE_DEVICES`. On the real PRO 4000, a bandwidth gate failure means the driver-reported clocks/bus differ from the ESTIMATE in `config.c` — report the logged probed values. |
+| `device gate: name "..." does not contain "RTX PRO 4000"` / `compute capability ... need 12.x` / `device gate: N GiB < required 24 GiB (5% tolerance, floor 22 GiB)` / `derived bandwidth ... outside [...]` | non-target card (test rig) or wrong device selected | `export MIMFER_SOFT_DEVICE_GATE=1` (soft gate) and/or check `CUDA_VISIBLE_DEVICES`. On the real PRO 4000, a bandwidth gate failure means the driver-reported clocks/bus differ from the ESTIMATE in `config.c` — report the logged probed values. (The VRAM check already tolerates the driver reserve — 23.4256 GiB reported on the 24 GB card — so a VRAM failure on the real card means a genuinely different card or a driver regression.) |
 | `engine: device profile gate failed (...); continuing (MIMFER_SOFT_DEVICE_GATE set)` | soft gate active | Informational; expected on non-target silicon. |
 | `cuda: <api> (line N): invalid device function` | `-arch` doesn't match the GPU | Rebuild with the GPU's `-arch` (§3.4). |
 | `cuda: node window rejected on node N (continuing without it)` | L2 access-policy window not applicable on this driver/device | **Expected soft warning, not a failure** (the window is an optimization; commit continues without it). Record it in the report. |
