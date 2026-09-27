@@ -124,6 +124,25 @@ static mm_status ensure_kv_blocks(mm_engine *e, int slot, uint32_t lo,
     return MM_OK;
 }
 
+/* Slot teardown for a finished sequence (S1+S2+S3 of the slot lifecycle):
+ * release the slot's KV blocks back to the pool (the release zeroes the
+ * host block-table row -- the "no block" state), reset the slot's linear
+ * recurrence/conv state to the deterministic zero a fresh slot carries,
+ * and push the zeroed block-table row (host mirror -> device on the CUDA
+ * build; a host->host copy on the reference build, which is where the CPU
+ * kernels read the table). Runs at the round boundary after the decode
+ * round's token readback: the CUDA fetch_tokens host sync has already
+ * quiesced both streams, so the reset (compute stream) and the push
+ * (xfer stream) need no event ordering; the next round's push_ctrl
+ * re-establishes the usual ordering before any compute work. */
+static mm_status teardown_slot(mm_engine *e, int slot)
+{
+    MM_CHECK(mm_kvpool_release_slot(e->kv, slot));
+    MM_CHECK(mm_linstate_reset(e->st, slot));
+    MM_CHECK(mm_kvpool_push_tab(e->kv, slot, 0, e->kv->max_blocks_seq));
+    return MM_OK;
+}
+
 /* Fill the control buffer's sampling fields for this round. Each round
  * consumes exactly one 64-bit draw, mapped to the fixed-point 1.31 uniform
  * the SAMPLE kernel reads (greedy ignores it, but the stream still advances
@@ -262,7 +281,9 @@ static mm_status step_prefill(mm_engine *e, int slot)
 /* One decode round: every active slot advances one position. Slot s (in
  * ascending slot order) maps to decode row s; each row stores its token at
  * slot_pos, attends over [0, slot_len), and samples the next token. A slot
- * that hits its budget (max_out) or the context cap is finished and freed. */
+ * that hits its budget (max_out) or the context cap is finished and its
+ * slot torn down (KV blocks released, linear/conv state reset, block-table
+ * row zeroed and pushed) so a later sequence starts from a fresh state. */
 static mm_status step_decode(mm_engine *e, uint32_t n_dec)
 {
     const uint32_t *out;
@@ -322,6 +343,7 @@ static mm_status step_decode(mm_engine *e, uint32_t n_dec)
         e->n_tokens_out++;
         if (seq->gen >= seq->max_out || seq->len >= e->cfg.max_ctx) {
             seq->finished = 1;
+            MM_CHECK(teardown_slot(e, slot));
             MM_CHECK(mm_sched_done(&e->sched, slot));
         }
         m++;
