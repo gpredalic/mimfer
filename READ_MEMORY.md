@@ -4,16 +4,36 @@
 > touching any code. Update it immediately whenever project state materially
 > changes.
 >
-> **Last updated:** 2026-09-27 (artifact/tokenizer/telemetry integration
-> COMPLETED on `feature/artifact-integration` (6 commits, tip de8137e) —
-> engine `--artifact` opens + verifies the .mimfer container (hard fail)
-> and builds the tokenizer from ART_TOK; `artifact_test` (7 sections)
-> wired into `make test` (now 9 stages) + CMake; the test exposed two
-> defects: `mm_art_write` now pads to the stored file_size (§6.10) and
-> the tokenizer/telemetry hardening (§6.11/§6.12); full host suite green
-> incl. the bit-exact parity self-check; model/weights sections pending
-> internal format (tiny shape + fake weights stand in; golden path
-> bit-unchanged). Same day: ALL THREE BUGFIX BRANCHES NOW MERGED INTO
+> **Last updated:** 2026-09-27 (REAL MODEL LOADING COMPLETED on
+> `feature/real-model-loading` (commit b321049, on top of main@6907247
+> which carries `feature/artifact-integration`, tip de8137e) — the fake
+> model-weight path is REPLACED: `--artifact` now parses ART_MODEL
+> (84-byte fixed layout, `mm_art_model_parse`), stages the real
+> ART_WEIGHTS index + bf16 payloads into the weight arena
+> (`mm_model_weights_load`, hard-fail chain incl. the canonical
+> name/shape/order gate), and CUDA create is gated by
+> `mm_vram_workload_fit` (weight + activation arenas + pinned I/O vs
+> free-VRAM budget); engine_create failure paths release all resources
+> via `goto fail` (§6.13). `artifact_test` gains section G (loaders) +
+> the staged-weights byte-exact check (123 tensors) + engine negatives
+> (no ART_WEIGHTS → CORRUPT at create; model/weights disagree → SHAPE
+> at load). Full host `make test` green (9 stages, exit 0); CUDA build
+> clean (real nvcc 13.1.115, sm_120); RE-VERIFIED ON SILICON 2026-09-27
+> (RTX PRO 4000 Blackwell, CUDA_VISIBLE_DEVICES=1): `PARITY PASSED`
+> (1564 ops, 2,009,424 elements, 2,009,422 bit-exact) + `GPU SMOKE
+> PASSED` + `SLOT LIFECYCLE PASSED`, the gate logs `vram fit: ok
+> (workload 5 MiB <= budget 22788 MiB, of 23987 MiB total)`, and a
+> throwaway cross-device artifact run loads + steps the 12-layer
+> fixture with IDENTICAL CPU/GPU token streams (`staged 123 tensors
+> (1451824 bytes) into w_arena`). Earlier same day:
+> artifact/tokenizer/telemetry integration COMPLETED on
+> `feature/artifact-integration` (6 commits, tip de8137e) — engine
+> `--artifact` opens + verifies the .mimfer container (hard fail) and
+> builds the tokenizer from ART_TOK; `artifact_test` (now 8 sections)
+> wired into `make test` (9 stages) + CMake; `mm_art_write` now pads to
+> the stored file_size (§6.10) and the tokenizer/telemetry hardening
+> (§6.11/§6.12); full host suite green incl. the bit-exact parity
+> self-check. Earlier same day: ALL THREE BUGFIX BRANCHES NOW MERGED INTO
 > `main` (tip bed125a — `bugfix/kv-index-ima`, `bugfix/vram-gate-tolerance`,
 > `bugfix/slot-lifecycle`); the slot-lifecycle teardown fix S1/S2/S3
 > VERIFIED on CPU + the RTX PRO 4000 Blackwell — `SLOT LIFECYCLE PASSED`,
@@ -126,6 +146,7 @@ CPU-reference execution path is **COMPLETE and VERIFIED**.
 | [COMPLETE] | Device-gate VRAM tolerance — `mm_device_check` accepts the driver-reported total within 5% below nominal (the 24 GB card reports 23.4256 GiB, measured 2026-09-27) + `device_gate_test` regression (host suite, both build systems); silicon re-run without `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively |
 | [COMPLETE] | Slot-lifecycle teardown (S1+S2+S3) — `teardown_slot()` in `src/engine/engine.c` runs at sequence completion: KV blocks released to the pool (S1, no leak), the slot's linear/conv state reset (S2), the block-table row zeroed and pushed (S3, the "no block" state). Regression `slot_lifecycle_test` / `gpu_slot` (one shared source, host + GPU): RED pre-fix, GREEN post-fix on host AND silicon 2026-09-27 (`SLOT LIFECYCLE PASSED`; reused-slot B byte-identical to a fresh engine; pool free count back to post-load; block-table row zeroed; deterministic across two GPU runs) |
 | [COMPLETE] | Artifact/tokenizer/telemetry integration — `feature/artifact-integration` (host-verified 2026-09-27): engine `--artifact` opens + verifies the .mimfer container (hard fail) and builds the tokenizer from ART_TOK; `mm_tok_unload` + unloaded-rank guard + encode `n_out`; telemetry ring engine-owned + `mm_tel_report` small-buffer guards; `mm_art_write` pads to the stored file_size; `artifact_test` (7 sections: container, checksum/geometry/version-gate corruption, BPE, mbuf codec, telemetry, engine path) wired into both build systems + the 9-stage `make test`; model/weights sections pending internal format (tiny shape + deterministic fake weights stand in; golden/parity path bit-unchanged); merge to `main` is the human gate |
+| [COMPLETE] | Real model loading — `feature/real-model-loading` (commit b321049, host + silicon-verified 2026-09-27): ART_MODEL fixed-layout parse (`mm_art_model_parse`), ART_WEIGHTS index+payload staging (`mm_model_weights_load`, canonical name/shape/order gate), `mm_vram_workload_fit` CUDA create gate, engine_create `goto fail` cleanup; artifact_test section G + staged-weights byte check; cross-device CPU/GPU artifact run token-identical on the RTX PRO 4000 Blackwell |
 | [PENDING]  | Blackwell Optimizations |
 
 Note: the CUDA execution path is written in full — `src/cuda/cuda_rt.c`
@@ -642,11 +663,11 @@ explicitly NOT ignored.
   identical across CPU and GPU; deterministic across two GPU runs.
 - See §6.9 for the bug it catches.
 
-### artifact_test — PASS (host, 2026-09-27; `feature/artifact-integration`)
+### artifact_test — PASS (host, 2026-09-27; `feature/artifact-integration` + `feature/real-model-loading`)
 
 - In-process .mimfer fixture suite (no binary fixtures on disk; the
   corruption cases are made by patching the on-disk fixture bytes and
-  re-opening — exactly what a bad download would produce). Seven
+  re-opening — exactly what a bad download would produce). Eight
   sections, gated by `make test` (9 stages: plan → rope → flags →
   device-gate → **artifact** → engine-smoke → engine-features →
   slot-lifecycle → parity self-check) and by CMake's `artifact-test`
@@ -669,8 +690,23 @@ explicitly NOT ignored.
      load + step determinism; hard-fail negatives (missing file, bad
      superblock checksum, missing ART_TOK section) leave no partial
      state; the golden path (no `--artifact`) is bit-unchanged.
+     Real-weights additions (`feature/real-model-loading`): no
+     ART_WEIGHTS → CORRUPT at create; model/weights layer
+     disagreement → SHAPE at load; the staged-weights check verifies
+     every one of the 123 registered tensors holds the exact bf16
+     payload the fixture wrote (byte-for-byte, the canonical
+     ART_MODEL-parsed 12-layer shape — not the built-in tiny shape);
+  G. **model + weight loaders** (`feature/real-model-loading`) —
+     `mm_art_model_parse` on the 84-byte fixed layout (field
+     round-trip, truncated payload, bad version, reserved flags,
+     reserved tail bytes ignored) and `mm_model_weights_load` on the
+     real on-disk index (valid staging, truncated payload, bad
+     version, count ≠ canonical, fp4 entry, canonical shape swap,
+     payload offset out of bounds).
 - RED before the `mm_art_write` pad + tokenizer fixes; GREEN after:
-  `ARTIFACT TEST PASSED` (Make build, 2026-09-27). cmake is not
+  `ARTIFACT TEST PASSED` (Make build, 2026-09-27); GREEN re-verified
+  2026-09-27 after the real-model-loading additions (8 sections, full
+  9-stage `make test`, exit 0). cmake is not
   installed in the dev container — the CMake target was verified by
   inspection (same `ENGINE_SRCS` + `IO_SRCS` set as the Makefile).
 
@@ -901,6 +937,48 @@ explicitly NOT ignored.
   stack array (8 KiB on a cold path at process end). Driven by
   `artifact_test` section E (exact report text on a small buffer).
 
+### 6.13 Real model loading — `feature/real-model-loading` (2026-09-27)
+
+Not a bug fix — the fake model-weight path replaced. Committed as
+b321049 (6 files, +1052/−84, on top of main@6907247):
+
+- **ART_MODEL (84-byte fixed layout):** `mm_art_model_parse` —
+  version + reserved-flags gate, exact 84-byte size gate (tail bytes
+  ignored), little-endian field walk into `mm_model_cfg`. On the
+  `--artifact` path the parsed shape (layers / hidden / inter /
+  heads / head_dim / vocab / max_pos / full-attention params)
+  finalizes the model config instead of the built-in tiny shape
+  (fixture: 12-layer shape, `FIX_MODEL_LAYERS`).
+- **ART_WEIGHTS (index + packed bf16 payloads):** the section payload
+  carries 2 × 4 KiB sub-checksums (stripped by the engine before
+  staging). `mm_model_weights_load` walks `[version u32][flags
+  u32][n u32]` then per tensor `[name_len u16][name][rows u32][cols
+  u32][dtype u32][off u64][bytes u64]` and hard-fails in order:
+  version → n == canonical spec count → per-entry bounds / names →
+  bf16-only dtype → canonical name/shape/ORDER (the index can be
+  self-consistent yet disagree with the model spec — this gate
+  catches the swap) → payload containment (off+bytes ≤ payload) →
+  `mm_arena_alloc` + host-mirror memcpy into the weight arena +
+  `mm_tens_add`. Fixture: 123 tensors / 1,451,824 bytes.
+- **VRAM-fit gate:** `mm_vram_workload_fit()` — the CUDA create path
+  sums the weight-arena cap, activation-arena cap and pinned-I/O
+  bytes and rejects the create before any device allocation when the
+  sum exceeds the free-VRAM budget. Log on silicon: `vram fit: ok
+  (workload 5 MiB <= budget 22788 MiB, of 23987 MiB total)`.
+- **Cleanup:** `mm_engine_create` failure paths converted to a single
+  `goto fail` — arena, pinned I/O, artifact handle, tokenizer and
+  allocation resources released; no partial state on any of the new
+  failure modes (covered by the artifact_test engine negatives).
+- **Verification:** host `make test` green (9 stages, exit 0); CUDA
+  build clean (real nvcc 13.1.115, sm_120); silicon re-run 2026-09-27
+  (RTX PRO 4000 Blackwell, CUDA_VISIBLE_DEVICES=1): `PARITY PASSED`
+  (1564 ops, 2,009,424 elements, 2,009,422 bit-exact), `GPU SMOKE
+  PASSED`, `SLOT LIFECYCLE PASSED`; throwaway cross-device artifact
+  run (one driver, host gcc + nvcc builds, reusing the test fixture
+  builders) — the 12-layer fixture loads + steps with IDENTICAL token
+  streams on CPU and GPU (`art_weights: staged 123 tensors (1451824
+  bytes) into w_arena`).
+
 ---
 ## 7. Next Priority
 
@@ -955,24 +1033,44 @@ self-check, `MAKE_TEST_EXIT=0`); the CMake target is wired to the
 identical source set (cmake not installed in the dev container —
 verified by inspection). MERGE TO `main` IS THE HUMAN GATE.
 
-**NEXT TASK: merge `feature/artifact-integration`, then the model/weights section format**
-(1) `feature/artifact-integration` holds the verified artifact
-integration (6 commits: tokenizer hardening, artifact pad fix, telemetry
-report guards, engine `--artifact` path, build wiring, `artifact_test`)
-— merge to `main` per the branch rules (human gate; the repo has no
-`develop` branch yet); ALL THREE BUGFIX BRANCHES ARE ALREADY MERGED INTO
-`main` (tip bed125a — `bugfix/kv-index-ima` cf473e3,
-`bugfix/vram-gate-tolerance` 4e1447b, `bugfix/slot-lifecycle`);
-(2) the model/weights section internal format — the engine currently
-stands in the tiny shape + fake weights for those sections; defining the
-on-disk format (and parsing it) is what makes real artifacts load beyond
-the tokenizer; (3) the pinned-block ctrl design: `e->ctrl_dev` points
-into the pinned host block yet `push_ctrl` issues an H2D
-`cudaMemcpyAsync` into it (kernels read it zero-copy) — driver-tolerated;
-make it an explicit host memcpy or a real device buffer; (4) then
-Blackwell optimizations (FMA / tensor-core paths) — each MUST re-pass the
-parity test (§4.6); (5) optional `compute-sanitizer` sweep once a
-toolkit that includes it is available.
+**Completed 2026-09-27 (real model loading):**
+`feature/real-model-loading` (commit b321049, 6 files, +1052/−84, on
+top of main@6907247) — the fake model-weight path is replaced with
+real artifact loading: ART_MODEL fixed-layout parse
+(`mm_art_model_parse`), ART_WEIGHTS index+payload staging into the
+weight arena (`mm_model_weights_load`, hard-fail chain incl. the
+canonical name/shape/order gate), `mm_vram_workload_fit` CUDA create
+gate, engine_create `goto fail` cleanup (arena / pinned I/O / artifact
+/ tokenizer / allocations); artifact_test gains section G + the
+staged-weights byte-exact check (123 tensors) + engine negatives (no
+ART_WEIGHTS → CORRUPT at create; model/weights disagree → SHAPE at
+load; §6.13). Host `make test` green (9 stages, exit 0); CUDA build
+clean (real nvcc 13.1.115, sm_120); silicon re-verified 2026-09-27
+(RTX PRO 4000 Blackwell, CUDA_VISIBLE_DEVICES=1): `PARITY PASSED`
+(1564 ops, 2,009,424 elements, 2,009,422 bit-exact) + `GPU SMOKE
+PASSED` + `SLOT LIFECYCLE PASSED`, the gate logs `vram fit: ok
+(workload 5 MiB <= budget 22788 MiB, of 23987 MiB total)`, and a
+throwaway cross-device artifact run (one driver, host gcc + nvcc
+builds, reusing the test fixture builders) loads + steps the 12-layer
+fixture with IDENTICAL token streams on CPU and GPU (`staged 123
+tensors (1451824 bytes) into w_arena`).
+
+**NEXT TASK: merge `feature/real-model-loading`, then the pinned-ctrl H2D cleanup**
+(1) `feature/real-model-loading` (commit b321049) holds the verified
+real-model-loading work — merge to `main` per the branch rules (human
+gate; the repo has no `develop` branch yet). `main` is at 6907247 and
+already carries the `feature/artifact-integration` commits (6 commits,
+tip de8137e), so only b321049 remains to merge; ALL THREE BUGFIX
+BRANCHES ARE ALREADY MERGED INTO `main` (tip bed125a —
+`bugfix/kv-index-ima` cf473e3, `bugfix/vram-gate-tolerance` 4e1447b,
+`bugfix/slot-lifecycle`); (2) the pinned-block ctrl design:
+`e->ctrl_dev` points into the pinned host block yet `push_ctrl`
+issues an H2D `cudaMemcpyAsync` into it (kernels read it zero-copy) —
+driver-tolerated; make it an explicit host memcpy or a real device
+buffer; (3) then Blackwell optimizations (FMA / tensor-core paths) —
+each MUST re-pass the parity test (§4.6); (4) optional
+`compute-sanitizer` sweep once a toolkit that includes it is
+available.
 
 Entry points:
 - **`GPU_VALIDATION.md`** — the complete runbook (machine requirements,
@@ -1025,7 +1123,7 @@ CUDA incrementally.
 
 | Item | Value |
 |------|-------|
-| Project health | GREEN (host + GPU parity verified 2026-09-27; artifact/tokenizer/telemetry integration host-verified 2026-09-27 on `feature/artifact-integration`, 9-stage `make test` green) |
+| Project health | GREEN (host + GPU parity verified 2026-09-27; artifact/tokenizer/telemetry integration host-verified 2026-09-27 on `feature/artifact-integration`; real model loading host + silicon-verified 2026-09-27 on `feature/real-model-loading` (b321049); 9-stage `make test` green) |
 | Host correctness | VERIFIED |
 | Memory safety | VERIFIED |
 | Determinism | VERIFIED |
@@ -1037,10 +1135,10 @@ CUDA incrementally.
 | Validation docs | COMPLETE — GPU_VALIDATION.md (runbook: requirements, procedure, troubleshooting, report template; all link sets include `src/rope/rope.c`), VALIDATION_CHECKLIST.md (go/no-go; Gate 0 requires `make test` green), RELEASE_READINESS.md (status/risks/audit incl. the new feature rows; R4 VRAM defect fixed + A5 gate-pass verified 2026-09-27), docs/dflash2.md (declared speculative-decoding scope); 2026-09-26 (gate sections re-synced 2026-09-27) |
 | README | COMPLETE — README.md: Current Model Support (two NInfer Qwen3.8-27B reference models only), Current Artifact Support (NInfer Artifact V2/V3), Hardware Scope (RTX PRO 4000 Blackwell only; soft-gate is a testing affordance), **Engine & CLI Feature Surface** (flag-by-flag status table: wired / validated scaffolding / validated hook), Extensibility (suckless-inspired, architecture influence not code dependency); 2026-09-26 |
 | Feature surface | COMPLETE (host) — RoPE tables (`src/rope/rope.c`, plain + YaRN; plain bit-identical to legacy formula so the golden is unchanged), CLI flag grammar (`src/flags/flags.c`), weights profiles + `mm_engine_cfg_validate` cross-field rules (`src/config/`), `--spec`/`--vision` gates in `mm_engine_load`; tests: `rope_test`, `flags_test`, `device_gate_test` (device-gate policy; VRAM tolerance regression-anchored to the measured 23.4256 GiB), `engine_features_test` (e2e YaRN q-buffer difference vs plain, plain byte-identical, spec/vision refusals); declared speculative scope: docs/dflash2.md; **artifact/tokenizer/telemetry integrated 2026-09-27** (`feature/artifact-integration`, host-verified): engine `--artifact` opens + verifies the .mimfer container and builds the tokenizer from ART_TOK (model/weights sections pending internal format — tiny shape + fake weights stand in), `artifact_test` (7 sections) in both build systems + the 9-stage `make test`; §6.10–§6.12 |
-| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26; 2026-09-27: ALL THREE BUGFIX BRANCHES MERGED INTO `main` (tip bed125a — `bugfix/kv-index-ima` cf473e3, `bugfix/vram-gate-tolerance` 4e1447b, `bugfix/slot-lifecycle`); `feature/artifact-integration` (6 commits, tip de8137e) holds the host-verified artifact/tokenizer/telemetry integration — merge to `main` pending (human gate) |
+| Governance | COMPLETE — .clinerules (mandatory rules: memory, branch, architecture, scope, CUDA parity-first, code quality, documentation, philosophy), .gitignore (build/CUDA/test/editor artifacts ignored; all docs + .clinerules explicitly kept versioned; root Makefile + tests/ un-ignored), git repo with 3 commits on `main`; work branch `feature/cmake-flag-surface` pushed to origin (CMake now exists in the tree — `CMakeLists.txt`, host parity + optional CUDA — so the branch name is no longer a historical artifact; see the Build system row); 2026-09-26; 2026-09-27: ALL THREE BUGFIX BRANCHES MERGED INTO `main` (tip bed125a — `bugfix/kv-index-ima` cf473e3, `bugfix/vram-gate-tolerance` 4e1447b, `bugfix/slot-lifecycle`); `feature/artifact-integration` (6 commits, tip de8137e) IS ON `main` (main tip 6907247); `feature/real-model-loading` (commit b321049 — real artifact model/weights loading + VRAM-fit gate, §6.13) is the only open work branch — merge to `main` pending (human gate) |
 | Build system | COMPLETE — root `Makefile` (GNU Make only): `make`/`make host` (10 host bins in `build/`), `make test` (9-stage sequential host suite, fail-fast: plan → rope → flags → device-gate → artifact → engine-smoke → engine-features → slot-lifecycle → parity-selfcheck), `make cuda`/`gpu-parity`/`gpu-smoke` (build-only + printed run commands), `check-nvcc`, `help`, `clean`, `distclean`; `CUDA_ARCH ?= sm_120`; `tests/host/par_selfcheck.c` wrapper to the shared comparator; two GNU Make 4.3 traps fixed (order-only dir prerequisite skip; default goal = first file target — see §4.7); verified end-to-end 2026-09-26; **B1 fix applied 2026-09-26**: GPU recipes now link `src/kernels/cuda/cx.cu` (via `GPU_CU_SRCS`, no `-x c`) — verified by `make -n` expansion; **CMake parity 2026-09-26**: `CMakeLists.txt` — same 8 host binaries via CMake/Ninja, Makefile-identical host flags (`-std=c11 -Wall -Wextra -Werror`, no host `-O*`/`-DNDEBUG`/`gnu11`), `test`/`golden`/`smoke`/`parity` CMake targets green; optional CUDA: `-DMIMFER_ENABLE_CUDA=ON` (+ `-DMIMFER_NVCC_EXTRA` for driverless stub linking), CMake default stays host-only, `--target cuda` builds the GPU binaries (mirrors `make` default / `make cuda`); **nvcc `-x` fix 2026-09-26**: all `-x` flags removed from Makefile + CMake + documented recipes — CUDA 13.1's `-x` is a *global* last-value-wins option (per-source `-x c` had been compiling `cx.cu` as plain C), language is now by file extension; `extern "C"` guards added to 17 public headers for the C++ TU; `make cuda NVCC_EXTRA=-L<toolkit>/lib64/stubs` and the CMake CUDA build verified against the **real nvcc 13.1.115** (zero warnings; fatbin: 14 kernels, sm_120); host build stays hermetic (no CUDA toolkit needed for the default target, suite green) |
 | Final build audit | COMPLETE (2026-09-26) — `BUILD_AUDIT.md` (B1 critical GPU-link fix + B10 critical: GPU `parity_test` had no `kx_cpu_oppref` provider; fixed with a `#ifdef MM_WITH_CUDA` reference copy in `tests/cuda/parity_test.c` — host recipe byte-identical, `make test` re-green; B2–B9 documented: 3 unregistered TUs pass `-fsyntax-only` under release flags, no CMake exists, `HDRS` caveat, tmux junk, stale README sentence fixed), `SOURCE_TREE.md` (all 57 tracked files: role/size/registration), `MODULE_DEPENDENCIES.md` (per-TU include graph, module map, cross-TU symbol deps, `MM_WITH_CUDA` split); no missing headers; no dead sources; Make = sole build system and matches the documented verbatim commands |
 | GPU execution | RUN 2 (2026-09-26, RTX PRO 4000 Blackwell, CUDA 13.2, driver 595.71.05): engine create+load PASS — run-1's opacity blockers (inverted `mm_log` filter; unlogged failure paths) are fixed and held. `mm_device_check` gate now visibly fails on VRAM: `device gate: 23 GiB < required 24 GiB` — SEPARATE known bug, deferred; `MIMFER_SOFT_DEVICE_GATE=1` bypasses it. New failure: first D2H observable readback — `E cuda_rt.c:113` (CK in `mm_d2h_async`) + `E parity_test.c:322` + `E parity_test.c:528`: `cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToHost, g_st[st])` → invalid argument. ROOT CAUSE (static analysis, high confidence): the D2H readback scratch `g_dev` (parity_test.c:296) is never allocated in the CUDA build — only the host `d2h()` calls `buf_grow()` — so the first copy passes dst=NULL. D2H path instrumented (temporary, remove after fix): `mm_d2h_async` (cuda_rt.c) logs dst/src/bytes/raw-stream+id + `cudaPointerGetAttributes` class per endpoint before every copy; the three call sites (per-op observable, pool dump, `fetch_tok`) log readback context. CUDA 13.1 C-API nits fixed in the instrumentation: `struct cudaPointerAttributes` (no C typedef), runtime `cudaMemoryType` has no `Unifiable` member. Re-verified: `make test` green; `make gpu-parity` + `make gpu-smoke` from clean with real nvcc 13.1.115, zero warnings. RUNS 3–4 (2026-09-27, same hardware, executed DIRECTLY FROM vibe-workspace — no ai-dev needed): root cause SILICON-CONFIRMED — rebuilt `build/parity_test build/par_golden.bin` (fresh local nvcc build, direct dispatch) printed `W cuda_rt.c:136: d2h_async: dst=(nil) class=unregistered src=... class=device bytes=512` before the `invalid argument` (two stable runs). Direct-dispatch kernels (k_embed + prefill ops) launch AND sync clean on real Blackwell (70 SMs, 23.43 GiB card, 672 GB/s). NEW BUG: `gpu_smoke` graph mode (no_graph=0) — first graph-launch stream sync → `E cx.cu:90: stream sync: an illegal memory access was encountered` (mm_kx_invoke, prefill); fault taints the context (every later `cudaStreamCreateWithFlags` fails with the same IMA); direct dispatch does NOT IMA → graph capture/replay path suspected. Environment: CUDA dev0 = PCI 0000:05:00.0 (/dev/nvidia1) BUSY (ctx create → OOM, VRAM held by an external workload, presumably ai-dev); CUDA dev1 = PCI 0000:06:00.0 (/dev/nvidia0) FREE (23.43 GiB total, ~23.2 GiB free) → always `CUDA_VISIBLE_DEVICES=1`; userspace driver libs 595.91.07 vs kernel 595.71.05 — nvidia-smi NVML mismatch only, CUDA driver API fully functional (probe: cuInit, enumeration, context, H2D/D2H round-trip verified); local toolkit /home/razvijalec/tools/cuda/usr/local/cuda-13.1 (real nvcc V13.1.115, NO compute-sanitizer); `make cuda NVCC=<that path>/nvcc` builds both GPU binaries from clean. NEXT: one-line `buf_grow` fix in the CUDA `d2h()` (separate commit), then strip instrumentation, then local re-run. ALL DONE 2026-09-27 — RUN 5: `PARITY PASSED` (1564 ops, 2,009,424 elements, 2,009,422 bit-exact; f32 state bit-exact) + `GPU SMOKE PASSED` (graph+direct); the "graph-mode IMA" was not a graph bug (1-based KV block-id indexing, §6.5) and the fix-unblocked decay gate failure (§6.6) was fixed host-side; `par_golden` regenerated; temporary instrumentation removed; committed on `bugfix/kv-index-ima` (3 commits) |
-| Recommended next step | (1) merge `feature/artifact-integration` (6 verified commits: tokenizer hardening §6.11, artifact pad fix §6.10, telemetry report guards §6.12, engine `--artifact` path, build wiring, `artifact_test`) per the branch rules — human gate for main (no `develop` branch exists yet); (2) DONE 2026-09-27 — ALL THREE BUGFIX BRANCHES MERGED INTO `main` (tip bed125a: `bugfix/kv-index-ima` cf473e3, `bugfix/vram-gate-tolerance` 4e1447b, `bugfix/slot-lifecycle`); (3) the model/weights section internal format — the engine stands in tiny shape + fake weights for those sections; defining + parsing the format makes real artifacts load beyond the tokenizer; (4) the pinned-ctrl H2D design (H2D into a pinned host dst — driver-tolerated; make it explicit); (5) Blackwell optimizations (FMA / tensor-core) — each MUST re-pass the parity test; (6) `compute-sanitizer` sweep once a toolkit with it is available |
+| Recommended next step | (1) DONE 2026-09-27 — `feature/artifact-integration` (6 verified commits: tokenizer hardening §6.11, artifact pad fix §6.10, telemetry report guards §6.12, engine `--artifact` path, build wiring, `artifact_test`) IS ON `main` (tip 6907247); (2) DONE 2026-09-27 — ALL THREE BUGFIX BRANCHES MERGED INTO `main` (tip bed125a: `bugfix/kv-index-ima` cf473e3, `bugfix/vram-gate-tolerance` 4e1447b, `bugfix/slot-lifecycle`); (3) DONE 2026-09-27 — real model loading on `feature/real-model-loading` (b321049): ART_MODEL parse + ART_WEIGHTS staging into the weight arena + `mm_vram_workload_fit` CUDA create gate, host + silicon-verified (cross-device CPU/GPU artifact run token-identical; §6.13); (4) the pinned-ctrl H2D design (H2D into a pinned host dst — driver-tolerated; make it explicit); (5) Blackwell optimizations (FMA / tensor-core) — each MUST re-pass the parity test; (6) `compute-sanitizer` sweep once a toolkit with it is available; (7) merge `feature/real-model-loading` (b321049) to `main` — human gate |
 | Audit findings | Final build audit 2026-09-26 (`BUILD_AUDIT.md` B1–B10): B1+B10 GPU-link defects FIXED (see above); artifact/tokenizer/telemetry INTEGRATED 2026-09-27 on `feature/artifact-integration` (IO_SRCS linked into every engine binary + the GPU source list; `artifact_test` — 7-section fixture suite — in both build systems + the 9-stage `make test`; the audit's `-fsyntax-only`-only status is superseded: the three modules now build under the exact release flags in every engine binary and are covered by a regression test); **no missing headers, no dead sources** (every TU registered); zero TODO/FIXME markers; ~1.3 GB tmux logs at repo root (junk, R6, human-decision); docs/architecture.md + docs/design.md referenced but absent; README stale Extensibility sentence fixed (B9); README docs table + RELEASE_READINESS §7 synced to the three new audit docs |
-| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). Silicon: run 1 failed at `mm_engine_create` (root cause: inverted `mm_log` filter — FIXED, kept permanently); run 2 (soft device gate) passes create+load and fails at the first D2H readback — root cause identified statically (NULL `g_dev` dst; the pre-copy instrumentation will confirm on silicon), one-line fix pending. OPEN BUGS: the pinned-block ctrl design — `e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (the kernels read `e->ctrl_dev` directly, zero-copy); run 2's H2D calls returned success, but that is driver-dependent behavior for a host dst + H2D kind — make it an explicit host memcpy or a real device buffer once the D2H path is cleared. Temporary instrumentation REMOVED 2026-09-27 (committed on `bugfix/kv-index-ima`); the run-2 IMA root cause (KV block-id indexing) and the LIN decay gate failure are fixed and silicon-verified. RESOLVED 2026-09-27: the device-gate VRAM bug — the driver reports 23.4256 GiB (2.39% below nominal) on the 24 GB card (driver/firmware reserve, measured with a driver-API probe); the gate now tolerates up to 5% below nominal (`MM_VRAM_TOLERANCE_PCT`) + `device_gate_test` regression; silicon re-run WITHOUT `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively (`mm_device_check ok (target profile matched)`, `GPU SMOKE PASSED` + `PARITY PASSED`; §6.8). Remaining risks: (1) the pinned-ctrl H2D design, (2) optimization passes (each must re-pass parity), (3) the model/weights section internal format is pending — `--artifact` today loads the tokenizer only (tiny shape + deterministic fake weights stand in for the model sections; the golden/parity path is bit-unchanged) |
+| Risk | Compile/link layer is CLOSED (real nvcc 13.1.115, both build systems, zero warnings, fatbin verified). Silicon: run 1 failed at `mm_engine_create` (root cause: inverted `mm_log` filter — FIXED, kept permanently); run 2 (soft device gate) passes create+load and fails at the first D2H readback — root cause identified statically (NULL `g_dev` dst; the pre-copy instrumentation will confirm on silicon), one-line fix pending. OPEN BUGS: the pinned-block ctrl design — `e->ctrl_dev` points into the pinned host block yet `push_ctrl` issues an H2D `cudaMemcpyAsync` into it (the kernels read `e->ctrl_dev` directly, zero-copy); run 2's H2D calls returned success, but that is driver-dependent behavior for a host dst + H2D kind — make it an explicit host memcpy or a real device buffer once the D2H path is cleared. Temporary instrumentation REMOVED 2026-09-27 (committed on `bugfix/kv-index-ima`); the run-2 IMA root cause (KV block-id indexing) and the LIN decay gate failure are fixed and silicon-verified. RESOLVED 2026-09-27: the device-gate VRAM bug — the driver reports 23.4256 GiB (2.39% below nominal) on the 24 GB card (driver/firmware reserve, measured with a driver-API probe); the gate now tolerates up to 5% below nominal (`MM_VRAM_TOLERANCE_PCT`) + `device_gate_test` regression; silicon re-run WITHOUT `MIMFER_SOFT_DEVICE_GATE` passed the hard gate natively (`mm_device_check ok (target profile matched)`, `GPU SMOKE PASSED` + `PARITY PASSED`; §6.8). Remaining risks: (1) the pinned-ctrl H2D design, (2) optimization passes (each must re-pass parity). RESOLVED 2026-09-27: the model/weights section format is DEFINED + PARSED — `--artifact` loads the real model shape (ART_MODEL) + real weights (ART_WEIGHTS, staged into the weight arena) with the `mm_vram_workload_fit` CUDA create gate; CPU/GPU artifact runs are token-identical (b321049, `feature/real-model-loading`) |
