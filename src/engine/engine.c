@@ -340,10 +340,9 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
      * can say what failed (see the fail: label below). */
     const char *stage = "entry";
 
-    /* TEMPORARY FIRST-SILICON INSTRUMENTATION (remove once diagnosed):
-     * every stage is traced at WARN (visible at the default log level) and
-     * every failure path prints the function, the numeric code,
-     * mm_status_str() and the relevant parameters before it returns. */
+    /* Every create stage is traced at WARN and every failure path prints
+     * the stage, the numeric code, mm_status_str() and the relevant
+     * parameters before it returns. */
 
     if (!(cfg && out)) {
         MM_LOGE("engine_create: cfg or out is NULL: code=%d (%s)",

@@ -317,6 +317,10 @@ static int buf_grow(uint8_t **p, size_t *cap, size_t n)
  * fetch_tokens round-boundary read). */
 static mm_status d2h(const void *dev, size_t n)
 {
+    if (n > g_dev_cap) {
+        if (!buf_grow(&g_dev, &g_dev_cap, n))
+            return MM_ERR_NOMEM;
+    }
     MM_CHECK(mm_event_record(PV_EV_READ, MM_ST_COMPUTE));
     MM_CHECK(mm_event_wait(PV_EV_READ, MM_ST_XFER));
     MM_CHECK(mm_d2h_async(g_dev, dev, n, MM_ST_XFER));
@@ -329,9 +333,6 @@ static mm_status fetch_tok(mm_engine *e, uint32_t n, const uint32_t **out)
 {
     MM_CHECK(mm_event_record(PV_EV_READ, MM_ST_COMPUTE));
     MM_CHECK(mm_event_wait(PV_EV_READ, MM_ST_XFER));
-    /* TEMPORARY D2H diagnostic (remove after first-silicon debug). */
-    MM_LOGW("d2h readback: fetch_tok bytes=%zu dst=%p src=%p",
-            (size_t)n * 4, (void *)e->toks_host, (const void *)e->ab.toks_dev);
     MM_CHECK(mm_d2h_async(e->toks_host, e->ab.toks_dev, (size_t)n * 4,
                           MM_ST_XFER));
     MM_CHECK(mm_stream_sync(MM_ST_XFER));
@@ -528,12 +529,6 @@ static mm_status run_round(mm_engine *e, const mm_plan *plan,
             if (!buf_grow(&g_gol, &g_gol_cap, o[j].bytes) ||
                 !fr_bytes(g_gol, o[j].bytes))
                 return MM_ERR_STATE;
-#ifdef MM_WITH_CUDA
-            /* TEMPORARY D2H diagnostic (remove after first-silicon
-             * debug): which observable is read back and from where. */
-            MM_LOGW("d2h readback: %s op%u tag%d bytes=%zu src=%p", what,
-                    i, o[j].tag, o[j].bytes, obs_ptr(op, o[j].tag));
-#endif
             MM_CHECK(d2h(obs_ptr(op, o[j].tag), o[j].bytes));
             g_obs++;
             snprintf(ctx, sizeof ctx, "%s op%u tag%d", what, i, o[j].tag);
@@ -558,11 +553,6 @@ static mm_status run_round(mm_engine *e, const mm_plan *plan,
             if (!buf_grow(&g_gol, &g_gol_cap, p[j].bytes) ||
                 !fr_bytes(g_gol, p[j].bytes))
                 return MM_ERR_STATE;
-#ifdef MM_WITH_CUDA
-            /* TEMPORARY D2H diagnostic (remove after first-silicon debug). */
-            MM_LOGW("d2h readback: %s pool tag%d bytes=%zu src=%p", what,
-                    p[j].tag, p[j].bytes, pool_ptr(e, p[j].tag));
-#endif
             MM_CHECK(d2h(pool_ptr(e, p[j].tag), p[j].bytes));
             g_obs++;
             snprintf(ctx, sizeof ctx, "%s pool tag%d", what, p[j].tag);
