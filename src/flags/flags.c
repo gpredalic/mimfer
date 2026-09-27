@@ -30,8 +30,10 @@ typedef struct fv {
 static const fv FLAG_TAB[] = {
     { "--artifact",         FV_STR,     offsetof(mm_engine_cfg, artifact),
       -1, -1,
-      "path to the .mimfer artifact (required for GPU runs; the host "
-      "reference build ignores it)" },
+      "path to the .mimfer artifact: the engine opens + verifies the "
+      "container and builds the tokenizer from its ART_TOK section. "
+      "When absent, the built-in tiny shape + deterministic fake weights "
+      "are used (the parity/golden path)" },
     { "--max-ctx",          FV_U32,     offsetof(mm_engine_cfg, max_ctx),
       1, MM_MAX_SEQ,
       "per-sequence context limit (1..262144; default 32768)" },

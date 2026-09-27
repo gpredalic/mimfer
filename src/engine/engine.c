@@ -6,9 +6,12 @@
  *
  * - Host build (no MM_WITH_CUDA): the CPU reference path. Arenas are plain
  *   calloc, plans dispatch straight into src/kernels/cpu/cx.c, no device
- *   state exists. The tiny fake model (host_tiny_shape) stands in for
- *   artifact parsing so the whole lifecycle -- load, prefill, decode,
- *   sampling, teardown -- runs end-to-end and is bit-deterministic.
+ *   state exists. When --artifact is given the engine opens + verifies the
+ *   .mimfer container and builds the tokenizer from its ART_TOK section;
+ *   the tiny fake model (host_tiny_shape) + deterministic fake weights
+ *   stand in for the model/weights sections (internal format pending) so
+ *   the whole lifecycle -- load, prefill, decode, sampling, teardown --
+ *   runs end-to-end and is bit-deterministic.
  *
  * - CUDA build (MM_WITH_CUDA): the same lifecycle owns real device memory.
  *   Arenas are device allocations carrying a host mirror (alloc.h): weights
@@ -471,8 +474,64 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
     e->on_host = 1;
 #endif
 
-    /* No artifact in this build: stand in the fixed tiny hybrid shape in
-     * place of parsing the model section. */
+    /* Artifact path (lifecycle step 2 + 6): when --artifact is given,
+     * open + verify the container (hard fail) and build the tokenizer
+     * from the ART_TOK section. The model and weights sections are not
+     * parsed yet (their internal format is pending), so the fixed tiny
+     * hybrid shape + deterministic fake weights stand in below until the
+     * fake-weight removal; see RELEASE_READINESS.md §3. */
+    if (e->cfg.artifact && e->cfg.artifact[0]) {
+        const mm_arts *sec;
+        const uint8_t *tok_data;
+        size_t tok_len;
+        mm_tok *tk;
+
+        s = mm_art_open(e->cfg.artifact, &e->art);
+        if (s != MM_OK) {
+            free(e);
+            return s;
+        }
+        s = mm_art_verify(e->art);
+        if (s != MM_OK) {
+            mm_art_close(e->art);
+            e->art = NULL;
+            free(e);
+            return s;
+        }
+        sec = mm_art_find(e->art, ART_TOK);
+        if (!sec) {
+            MM_LOGE("engine_create: artifact %s: no ART_TOK section "
+                    "(a tokenizer section is required)", e->cfg.artifact);
+            mm_art_close(e->art);
+            e->art = NULL;
+            free(e);
+            return MM_ERR_CORRUPT;
+        }
+        tok_data = mm_art_data(e->art, sec, &tok_len);
+        s = mm_tok_load(tok_data, tok_len, &tk);
+        if (s != MM_OK) {
+            mm_art_close(e->art);
+            e->art = NULL;
+            free(e);
+            return s;
+        }
+        /* Ownership transfer: the embedded e->tok now owns the merge-hash
+         * arrays; the load buffer itself is dropped. mm_engine_destroy
+         * releases them via mm_tok_unload. */
+        e->tok = *tk;
+        free(tk);
+        MM_LOGW("engine_create: artifact ok (%s / %s, v%u.%u): tokenizer "
+                "vocab=%u merges=%u special=%u eos=%u",
+                e->art->model_id, e->art->weights_id, e->art->major,
+                e->art->minor, e->tok.vocab, e->tok.n_merges,
+                e->tok.n_special, e->tok.eos);
+    } else {
+        MM_LOGW("engine_create: no --artifact: built-in tiny shape + "
+                "deterministic fake weights (golden path)");
+    }
+
+    /* Model shape: the artifact's model section is not parsed yet -- stand
+     * in the fixed tiny hybrid shape. */
     host_tiny_shape(&e->mc);
 
     /* kv_capacity 0 = auto: one full sequence, 64-token aligned. */
@@ -634,6 +693,9 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
 #endif
 
     mm_rng_seed(&e->rng, e->cfg.seed ? e->cfg.seed : 1);
+    /* Telemetry ring: engine-owned state, zeroed here (single-producer
+     * contract: the scheduler thread appends one sample per round). */
+    mm_tel_init(&e->tel);
     *out = e;
     MM_LOGW("engine_create: ok");
     return MM_OK;
@@ -648,6 +710,11 @@ fail:
         mm_pin_free(e->pin);
     mm_cuda_shutdown();
 #endif
+    if (e->art) {
+        mm_art_close(e->art);
+        e->art = NULL;
+    }
+    mm_tok_unload(&e->tok);
     free(e);
     return s;
 }
@@ -770,6 +837,15 @@ void mm_engine_destroy(mm_engine *e)
         mm_pin_free(e->pin);
     mm_cuda_shutdown();
 #endif
+    /* The artifact handle + the embedded tokenizer (opened/built in
+     * mm_engine_create; both no-ops on the golden path without
+     * --artifact). The artifact outlives every read of the tokenizer
+     * payloads, so it is closed before the tokenizer is unloaded. */
+    if (e->art) {
+        mm_art_close(e->art);
+        e->art = NULL;
+    }
+    mm_tok_unload(&e->tok);
     free(e);
 }
 
