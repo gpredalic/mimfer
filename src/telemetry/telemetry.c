@@ -35,12 +35,13 @@ void mm_tel_round(mm_tel *t, uint8_t kind, uint32_t tokens, uint32_t kv,
     t->t_end_ms = t_end;
 }
 
-/* Percentile over decode round durations (itl). Static 1024-element
- * workspace; the ring holds 4096 so we take the first 1024 decode samples.
- * Cold path (process end), so a plain insertion sort is fine. */
+/* Percentile over decode round durations (itl). 1024-element stack
+ * workspace (cold path at process end; 8 KiB is fine); the ring holds
+ * 4096 so we take the first 1024 decode samples. A plain insertion sort
+ * is fine on the cold path. */
 static uint64_t percent_decode_ms(const mm_tel *t, double p)
 {
-    static uint64_t ws[1024];
+    uint64_t ws[1024];
     uint64_t vals = 0, i, k;
 
     for (i = 0; i < MM_TEL_RING && vals < 1024; i++) {
@@ -89,24 +90,36 @@ int mm_tel_report(const mm_tel *t, char *buf, size_t n)
     double rate = hits + misses ? 100.0 * (double)hits / (double)(hits + misses) : 0.0;
     char line[256];
 
+    if (n < 2)
+        return -1;
     o += snprintf(buf + o, n - (size_t)o,
                   "rounds %llu (prefill %llu, decode %llu)  tokens %llu\n",
                   (unsigned long long)t->rounds,
                   (unsigned long long)t->n_prefill,
                   (unsigned long long)t->n_decode,
                   (unsigned long long)t->n_tokens);
+    /* o may exceed n once a line is truncated (snprintf returns the full
+     * length); never compute n - o with o >= n (size_t underflow). */
+    if ((size_t)o >= n)
+        return o;
     o += snprintf(buf + o, n - (size_t)o,
                   "prefix cache: %llu hits / %llu misses (%.1f%%)\n",
                   (unsigned long long)hits, (unsigned long long)misses, rate);
+    if ((size_t)o >= n)
+        return o;
     o += snprintf(buf + o, n - (size_t)o,
                   "last 32 rounds:\n  %-8s %-6s %-9s %-9s %s\n",
                   "kind", "toks", "ms", "kv_used", "cache_hits");
+    if ((size_t)o >= n)
+        return o;
     for (i = 0; i < 32; i++) {
         uint32_t idx = (t->head + MM_TEL_RING - 1 - i) & (MM_TEL_RING - 1);
         const mm_tel_sample *s = &t->ring[idx];
         const char *k = s->kind == TEL_PREFILL ? "prefill"
                         : s->kind == TEL_VERIFY ? "verify" : "decode";
         if (s->t_ms == 0 && s->t_end == 0)
+            break;
+        if ((size_t)o >= n)
             break;
         snprintf(line, sizeof line, "  %-8s %-6u %-9llu %-9u %u\n",
                  k, s->tokens,

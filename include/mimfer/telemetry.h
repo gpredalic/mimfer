@@ -46,7 +46,8 @@ typedef struct mm_tel {
 void mm_tel_init(mm_tel *t);
 void mm_tel_round(mm_tel *t, uint8_t kind, uint32_t tokens, uint32_t kv,
                   uint32_t cache_hits, uint64_t t_start, uint64_t t_end);
-/* Human-readable table into buf; returns bytes written or -1. */
+/* Human-readable table into buf (truncated at n); returns the full table
+ * length, or -1 if n < 2. */
 int  mm_tel_report(const mm_tel *t, char *buf, size_t n);
 /* One-line summary: "123.4 tok/s, ttft 412 ms, itl p50 16.9 ms" */
 int  mm_tel_summary(const mm_tel *t, char *buf, size_t n);
