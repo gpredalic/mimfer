@@ -336,14 +336,41 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
     mm_engine *e;
     size_t w, cap;
     mm_status s;
+    /* Names the stage that reaches the 'fail:' label so the cleanup log
+     * can say what failed (see the fail: label below). */
+    const char *stage = "entry";
 
-    MM_REQUIRE(cfg && out, MM_ERR_STATE);
+    /* TEMPORARY FIRST-SILICON INSTRUMENTATION (remove once diagnosed):
+     * every stage is traced at WARN (visible at the default log level) and
+     * every failure path prints the function, the numeric code,
+     * mm_status_str() and the relevant parameters before it returns. */
+
+    if (!(cfg && out)) {
+        MM_LOGE("engine_create: cfg or out is NULL: code=%d (%s)",
+                (int)MM_ERR_STATE, mm_status_str(MM_ERR_STATE));
+        return MM_ERR_STATE;
+    }
     *out = NULL;
-    MM_CHECK(mm_engine_cfg_validate(cfg));
+
+    stage = "cfg_validate";
+    s = mm_engine_cfg_validate(cfg);
+    if (s != MM_OK) {
+        MM_LOGE("engine_create: mm_engine_cfg_validate failed: "
+                "code=%d (%s)", (int)s, mm_status_str(s));
+        return s;
+    }
+    MM_LOGW("engine_create: cfg_validate ok (max_ctx=%u kv_capacity=%u "
+            "concurrency=%u chunk=%u rope_yarn=%d spec=%d profile_id=%u "
+            "no_graph=%d)",
+            cfg->max_ctx, cfg->kv_capacity, cfg->concurrency, cfg->chunk,
+            cfg->rope_yarn, cfg->spec, cfg->profile_id, cfg->no_graph);
 
     e = calloc(1, sizeof *e);
-    if (!e)
+    if (!e) {
+        MM_LOGE("engine_create: calloc(%zu) failed: code=%d (%s)",
+                sizeof *e, (int)MM_ERR_NOMEM, mm_status_str(MM_ERR_NOMEM));
         return MM_ERR_NOMEM;
+    }
     e->cfg = *cfg;
 
 #ifdef MM_WITH_CUDA
@@ -354,21 +381,68 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
      * non-target silicon (test rigs). */
     {
         int ndev = 0;
-        MM_CHECK(mm_cuda_device_count(&ndev));
-        MM_REQUIRE(ndev > 0, MM_ERR_DEVICE);
-        MM_CHECK(mm_cuda_init(0));
-        MM_CHECK(mm_device_probe(0, &e->dev));
+
+        stage = "cuda_device_count";
+        s = mm_cuda_device_count(&ndev);
+        if (s != MM_OK) {
+            MM_LOGE("engine_create: mm_cuda_device_count failed: "
+                    "code=%d (%s)", (int)s, mm_status_str(s));
+            free(e);
+            return s;
+        }
+        MM_LOGW("engine_create: mm_cuda_device_count ok (ndev=%d)", ndev);
+
+        if (ndev <= 0) {
+            MM_LOGE("engine_create: no CUDA devices visible (ndev=%d): "
+                    "code=%d (%s)", ndev, (int)MM_ERR_DEVICE,
+                    mm_status_str(MM_ERR_DEVICE));
+            free(e);
+            return MM_ERR_DEVICE;
+        }
+
+        stage = "cuda_init";
+        s = mm_cuda_init(0);
+        if (s != MM_OK) {
+            MM_LOGE("engine_create: mm_cuda_init(0) failed: code=%d (%s)",
+                    (int)s, mm_status_str(s));
+            free(e);
+            return s;
+        }
+        MM_LOGW("engine_create: mm_cuda_init(0) ok");
+
+        stage = "device_probe";
+        s = mm_device_probe(0, &e->dev);
+        if (s != MM_OK) {
+            MM_LOGE("engine_create: mm_device_probe(0) failed: "
+                    "code=%d (%s)", (int)s, mm_status_str(s));
+            free(e);
+            return s;
+        }
+        MM_LOGW("engine_create: mm_device_probe ok: %s (sm_%d%d, %d SMs, "
+                "%zu GiB, %zu GB/s derived, l2 %zu MiB, smem/SM %zu KiB)",
+                e->dev.name, e->dev.cc_major, e->dev.cc_minor,
+                e->dev.sm_count, e->dev.vram_bytes >> 30, e->dev.bw_gbps,
+                e->dev.l2_bytes >> 20, e->dev.smem_per_sm >> 10);
+
+        stage = "device_check";
         {
             mm_status ds = mm_device_check(&e->dev, &MM_TARGET_PRO4000);
-            if (ds != MM_OK && !getenv("MIMFER_SOFT_DEVICE_GATE")) {
-                mm_cuda_shutdown();
-                free(e);
-                return ds;
+            if (ds != MM_OK) {
+                MM_LOGE("engine_create: mm_device_check failed: "
+                        "code=%d (%s)", (int)ds, mm_status_str(ds));
+                if (!getenv("MIMFER_SOFT_DEVICE_GATE")) {
+                    mm_cuda_shutdown();
+                    free(e);
+                    return ds;
+                }
+                MM_LOGW("engine_create: device profile gate failed "
+                        "(code=%d, %s); continuing "
+                        "(MIMFER_SOFT_DEVICE_GATE set)",
+                        (int)ds, mm_status_str(ds));
+            } else {
+                MM_LOGW("engine_create: mm_device_check ok "
+                        "(target profile matched)");
             }
-            if (ds != MM_OK)
-                MM_LOGW("engine: device profile gate failed (%s); "
-                        "continuing (MIMFER_SOFT_DEVICE_GATE set)",
-                        mm_status_str(ds));
         }
     }
     e->on_host = 0;
@@ -388,20 +462,33 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
     if (e->cfg.concurrency > MM_MAX_CONCURRENCY)
         e->cfg.concurrency = MM_MAX_CONCURRENCY;
 
+    stage = "model_cfg_finalize";
     s = mm_model_cfg_finalize(&e->mc);
     if (s != MM_OK) {
+        MM_LOGE("engine_create: mm_model_cfg_finalize failed: code=%d (%s) "
+                "(max_ctx=%u kv_capacity=%u concurrency=%u)",
+                (int)s, mm_status_str(s), e->cfg.max_ctx, e->cfg.kv_capacity,
+                e->cfg.concurrency);
 #ifdef MM_WITH_CUDA
         mm_cuda_shutdown();
 #endif
         free(e);
         return s;
     }
+    MM_LOGW("engine_create: mm_model_cfg_finalize ok (layers=%u hidden=%u "
+            "kv_capacity=%u)",
+            e->mc.layers, e->mc.hidden, e->cfg.kv_capacity);
 
     /* RoPE effective table (plain RoPE, or the YaRN blend when the
      * config enables it): built once here, then re-copied into the
      * control buffer after every round's reset (step functions). */
+    stage = "rope_init";
     s = mm_rope_init(&e->rope, &e->mc, &e->cfg);
     if (s != MM_OK) {
+        MM_LOGE("engine_create: mm_rope_init failed: code=%d (%s) "
+                "(rope_yarn=%d rope_factor=%f rope_orig_ctx=%u)",
+                (int)s, mm_status_str(s), e->cfg.rope_yarn,
+                (double)e->cfg.rope_factor, e->cfg.rope_orig_ctx);
 #ifdef MM_WITH_CUDA
         mm_cuda_shutdown();
 #endif
@@ -411,16 +498,19 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
     {
         char rdesc[96];
         mm_rope_desc(&e->rope, &e->mc, rdesc, sizeof rdesc);
-        MM_LOGI("engine: rope: %s", rdesc);
+        MM_LOGW("engine_create: mm_rope_init ok -- rope: %s", rdesc);
     }
 
     /* Weights profile: validate the request against the checkpoint's
      * native ceiling (the artifact's RoPE context, config.c) and pin
      * the active checkpoint identity for the load log. */
+    stage = "profile_get";
     if (e->cfg.profile_id != 0) {
         const mm_profile *p = mm_profile_get(e->cfg.profile_id);
         if (!p) {
-            MM_LOGE("engine: profile id %u not found", e->cfg.profile_id);
+            MM_LOGE("engine_create: mm_profile_get(%u) returned NULL: "
+                    "code=%d (%s)", e->cfg.profile_id, (int)MM_ERR_RANGE,
+                    mm_status_str(MM_ERR_RANGE));
 #ifdef MM_WITH_CUDA
             mm_cuda_shutdown();
 #endif
@@ -428,10 +518,11 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
             return MM_ERR_RANGE;
         }
         if (e->cfg.max_ctx > p->max_ctx) {
-            MM_LOGE("engine: profile %s: max_ctx %u exceeds the "
+            MM_LOGE("engine_create: profile %s: max_ctx %u exceeds the "
                     "checkpoint ceiling %u (extend with YaRN, not by "
-                    "raising --max-ctx past it)",
-                    p->name, e->cfg.max_ctx, p->max_ctx);
+                    "raising --max-ctx past it); code=%d (%s)",
+                    p->name, e->cfg.max_ctx, p->max_ctx, (int)MM_ERR_RANGE,
+                    mm_status_str(MM_ERR_RANGE));
 #ifdef MM_WITH_CUDA
             mm_cuda_shutdown();
 #endif
@@ -452,9 +543,11 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
      * running non-speculative decode. */
     if (e->cfg.spec != 0) {
         const char *backend = e->cfg.spec == 1 ? "mtp" : "dflash2";
-        MM_LOGE("engine: --spec %s is not implemented in this build "
-                "(draft/verify loop: planned work, docs/dflash2.md); "
-                "start with --spec off", backend);
+        MM_LOGE("engine_create: --spec %s is not implemented in this "
+                "build (draft/verify loop: planned work, docs/dflash2.md); "
+                "start with --spec off; code=%d (%s)",
+                backend, (int)MM_ERR_UNSUPPORTED,
+                mm_status_str(MM_ERR_UNSUPPORTED));
 #ifdef MM_WITH_CUDA
         mm_cuda_shutdown();
 #endif
@@ -472,39 +565,61 @@ mm_status mm_engine_create(const mm_engine_cfg *cfg, mm_engine **out)
      * plus the host mirror the fake fill writes through (alloc.h). */
     w = mm_model_weights_bytes(&e->mc);
     cap = w + host_pool_bytes(&e->mc, e->cfg.kv_capacity, e->cfg.concurrency);
+    MM_LOGW("engine_create: arena sizing (weights=%zu, w_arena cap=%zu, "
+            "a_arena cap=%zu)",
+            w, cap, host_act_bytes(&e->mc, e->cfg.chunk));
 #ifdef MM_WITH_CUDA
+    stage = "w_arena (device)";
     s = mm_arena_init_device(&e->w_arena, cap, "w_arena");
     if (s != MM_OK)
         goto fail;
+    MM_LOGW("engine_create: mm_arena_init_device w_arena ok "
+            "(cap=%zu base=%p hbase=%p)",
+            cap, e->w_arena.base, e->w_arena.hbase);
     /* Activation arena: sized for M = chunk, the largest batch we reserve. */
+    stage = "a_arena (device)";
     s = mm_arena_init_device(&e->a_arena,
                              host_act_bytes(&e->mc, e->cfg.chunk), "a_arena");
     if (s != MM_OK)
         goto fail;
+    MM_LOGW("engine_create: mm_arena_init_device a_arena ok "
+            "(cap=%zu base=%p)", e->a_arena.cap, e->a_arena.base);
     /* Pinned host I/O block: device control buffer + token readback mirror
      * (layout in cuda_mem.h). */
+    stage = "pin_alloc";
     s = mm_pin_alloc(MM_PIN_BYTES, &e->pin);
     if (s != MM_OK)
         goto fail;
     e->ctrl_dev = (mm_ctrl *)e->pin;
     e->toks_host = (uint32_t *)((char *)e->pin +
                                 mm_align_up(sizeof(mm_ctrl), 16));
+    MM_LOGW("engine_create: mm_pin_alloc ok (%zu bytes, ptr=%p)",
+            (size_t)MM_PIN_BYTES, e->pin);
 #else
+    stage = "w_arena (host)";
     s = mm_arena_init_host(&e->w_arena, cap, "w_arena");
     if (s != MM_OK)
         goto fail;
+    MM_LOGW("engine_create: mm_arena_init_host w_arena ok (cap=%zu base=%p)",
+            cap, e->w_arena.base);
     /* Activation arena: sized for M = chunk, the largest batch we reserve. */
+    stage = "a_arena (host)";
     s = mm_arena_init_host(&e->a_arena, host_act_bytes(&e->mc, e->cfg.chunk),
                            "a_arena");
     if (s != MM_OK)
         goto fail;
+    MM_LOGW("engine_create: mm_arena_init_host a_arena ok (cap=%zu base=%p)",
+            e->a_arena.cap, e->a_arena.base);
 #endif
 
     mm_rng_seed(&e->rng, e->cfg.seed ? e->cfg.seed : 1);
     *out = e;
+    MM_LOGW("engine_create: ok");
     return MM_OK;
 
 fail:
+    MM_LOGE("engine_create: stage '%s' failed: code=%d (%s); cleaning up",
+            stage, (int)s, mm_status_str(s));
     mm_arena_free(&e->a_arena);
     mm_arena_free(&e->w_arena);
 #ifdef MM_WITH_CUDA
