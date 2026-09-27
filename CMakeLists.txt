@@ -8,8 +8,8 @@
 # Produces the same artifacts as the root Makefile (GNU Make; both systems
 # are kept and equivalent), all in build/ (= CMAKE_BINARY_DIR):
 #
-#   host (gcc):  plan_test  rope_test  flags_test  engine_smoke
-#                engine_features  par_golden  par_selfcheck
+#   host (gcc):  plan_test  rope_test  flags_test  device_gate_test
+#                engine_smoke  engine_features  par_golden  par_selfcheck
 #   GPU  (nvcc): parity_test  gpu_smoke     (-DMIMFER_ENABLE_CUDA=ON)
 #
 # Test targets (equivalents of the Makefile's run targets):
@@ -132,6 +132,9 @@ add_executable(plan_test       tests/host/plan_test.c ${PLAN_SRCS})
 add_executable(engine_smoke    tests/host/engine_smoke.c ${ENGINE_SRCS})
 add_executable(rope_test       tests/host/rope_test.c src/rope/rope.c ${CFG_TEST_SRCS})
 add_executable(flags_test      tests/host/flags_test.c src/flags/flags.c ${CFG_TEST_SRCS})
+# Device gate (mm_device_check): VRAM tolerance regression-anchored to the
+# measured driver value on silicon (23.4256 GiB on the 24 GB card).
+add_executable(device_gate_test tests/host/device_gate_test.c ${CFG_TEST_SRCS})
 add_executable(engine_features tests/host/engine_features_test.c ${ENGINE_SRCS})
 add_executable(par_golden      tests/host/par_golden.c ${ENGINE_SRCS})
 # Host self-check: thin wrapper that #includes tests/cuda/parity_test.c
@@ -139,7 +142,7 @@ add_executable(par_golden      tests/host/par_golden.c ${ENGINE_SRCS})
 add_executable(par_selfcheck   tests/host/par_selfcheck.c ${ENGINE_SRCS})
 
 set(MIMFER_HOST_BINS
-    plan_test engine_smoke rope_test flags_test
+    plan_test engine_smoke rope_test flags_test device_gate_test
     engine_features par_golden par_selfcheck)
 
 # Every Makefile host binary links -lm (no CUDA target may receive it).
@@ -154,9 +157,9 @@ add_custom_target(host DEPENDS ${MIMFER_HOST_BINS})
 #
 # Each 'run' target builds its binary (DEPENDS) and then executes it, exactly
 # like the matching Makefile target. 'test' runs the full Makefile sequence
-# (plan → rope → flags → engine-smoke → engine-features → golden → parity
-# self-check) via scripts/run_host_tests.sh, which makes the suite sequential
-# and fail-fast under any parallelism.
+# (plan → rope → flags → device-gate → engine-smoke → engine-features →
+# golden → parity self-check) via scripts/run_host_tests.sh, which makes the
+# suite sequential and fail-fast under any parallelism.
 #
 #   cmake --build build --target test     == make test
 #   cmake --build build --target parity   == make parity
@@ -186,6 +189,11 @@ add_custom_target(flags-test
     COMMAND $<TARGET_FILE:flags_test>
     DEPENDS flags_test
     COMMENT "== flags_test (host)")
+
+add_custom_target(device-gate-test
+    COMMAND $<TARGET_FILE:device_gate_test>
+    DEPENDS device_gate_test
+    COMMENT "== device_gate_test (host)")
 
 add_custom_target(engine-smoke
     COMMAND $<TARGET_FILE:engine_smoke>
@@ -219,8 +227,8 @@ add_custom_target(parity-selfcheck
 add_custom_target(test
     COMMAND /bin/sh ${CMAKE_SOURCE_DIR}/scripts/run_host_tests.sh ${CMAKE_BINARY_DIR}
     DEPENDS ${MIMFER_HOST_BINS}
-    COMMENT "HOST TEST SUITE (plan_test, rope_test, flags_test, engine_smoke, "
-            "engine_features, parity self-check)")
+    COMMENT "HOST TEST SUITE (plan_test, rope_test, flags_test, device_gate_test, "
+            "engine_smoke, engine_features, parity self-check)")
 
 # Aliases (== 'make parity', 'make smoke', 'make tests').
 add_custom_target(parity DEPENDS parity-selfcheck)

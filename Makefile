@@ -13,8 +13,8 @@
 #
 # Quick start:
 #   make            build all host targets
-#   make test       run the host test suite (plan, rope, flags, engine smoke,
-#                   engine features, parity self-check)
+#   make test       run the host test suite (plan, rope, flags, device gate,
+#                   engine smoke, engine features, parity self-check)
 #   make cuda       build the GPU tests (needs nvcc; default arch sm_120)
 #   make help       document every target
 # ============================================================================
@@ -118,6 +118,7 @@ PLAN_TEST     := $(BUILDDIR)/plan_test
 ENGINE_SMOKE  := $(BUILDDIR)/engine_smoke
 ROPE_TEST     := $(BUILDDIR)/rope_test
 FLAGS_TEST    := $(BUILDDIR)/flags_test
+DEVICE_GATE_TEST := $(BUILDDIR)/device_gate_test
 ENG_FEATURES  := $(BUILDDIR)/engine_features
 PAR_GOLDEN    := $(BUILDDIR)/par_golden
 PAR_SELFCHECK := $(BUILDDIR)/par_selfcheck
@@ -126,7 +127,8 @@ PARITY_TEST   := $(BUILDDIR)/parity_test
 GPU_SMOKE     := $(BUILDDIR)/gpu_smoke
 
 HOST_BINS := $(PLAN_TEST) $(ENGINE_SMOKE) $(ROPE_TEST) $(FLAGS_TEST) \
-             $(ENG_FEATURES) $(PAR_GOLDEN) $(PAR_SELFCHECK)
+             $(DEVICE_GATE_TEST) $(ENG_FEATURES) $(PAR_GOLDEN) \
+             $(PAR_SELFCHECK)
 CUDA_BINS := $(PARITY_TEST) $(GPU_SMOKE)
 
 NVCC_OK := $(shell command -v $(NVCC) >/dev/null 2>&1 && echo yes)
@@ -154,6 +156,13 @@ $(FLAGS_TEST): tests/host/flags_test.c $(FLAGS_TEST_SRCS) $(HDRS)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) tests/host/flags_test.c $(FLAGS_TEST_SRCS) $(LDLIBS) -o $@
 
+# Device gate (mm_device_check): name/CC/VRAM/bandwidth policy against the
+# target profile; VRAM tolerance regression-anchored to the measured
+# driver value on silicon (23.4256 GiB reported on the 24 GB card).
+$(DEVICE_GATE_TEST): tests/host/device_gate_test.c $(CFG_TEST_SRCS) $(HDRS)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) tests/host/device_gate_test.c $(CFG_TEST_SRCS) $(LDLIBS) -o $@
+
 # Engine feature gates: YaRN table e2e, spec/vision refusals.
 $(ENG_FEATURES): tests/host/engine_features_test.c $(ENGINE_SRCS) $(HDRS)
 	mkdir -p $(@D)
@@ -180,7 +189,7 @@ $(GPU_SMOKE): tests/cuda/gpu_smoke.c $(GPU_SRCS) $(HDRS)
 	$(NVCC) $(NVCCFLAGS) $(NVCC_EXTRA) tests/cuda/gpu_smoke.c $(GPU_C_SRCS) $(GPU_CU_SRCS) -o $@
 # ---- targets --------------------------------------------------------------------------
 .PHONY: all host cuda test tests plan-test engine-smoke rope-test \
-        flags-test engine-features golden \
+        flags-test device-gate-test engine-features golden \
         parity-selfcheck parity smoke gpu-parity gpu-smoke check-nvcc \
         clean distclean help
 
@@ -219,6 +228,10 @@ flags-test: $(FLAGS_TEST)
 	@echo "== flags_test (host)"
 	$(FLAGS_TEST)
 
+device-gate-test: $(DEVICE_GATE_TEST)
+	@echo "== device_gate_test (host)"
+	$(DEVICE_GATE_TEST)
+
 engine-features: $(ENG_FEATURES)
 	@echo "== engine_features (host)"
 	$(ENG_FEATURES)
@@ -245,10 +258,11 @@ test:
 	$(MAKE) plan-test
 	$(MAKE) rope-test
 	$(MAKE) flags-test
+	$(MAKE) device-gate-test
 	$(MAKE) engine-smoke
 	$(MAKE) engine-features
 	$(MAKE) parity-selfcheck
-	@echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, engine_smoke, engine_features, parity self-check)"
+	@echo "HOST TEST SUITE PASSED (plan_test, rope_test, flags_test, device_gate_test, engine_smoke, engine_features, parity self-check)"
 
 tests: test
 
@@ -284,11 +298,13 @@ help:
 	@echo "                    $(CUDA_BINS)   (needs nvcc)"
 	@echo ""
 	@echo "host tests (build + run, strictly sequential, fail-fast):"
-	@echo "  make test         plan-test → rope-test → flags-test → engine-smoke"
-	@echo "                    → engine-features → parity-selfcheck   (alias: make tests)"
+	@echo "  make test         plan-test → rope-test → flags-test → device-gate-test"
+	@echo "                    → engine-smoke → engine-features → parity-selfcheck"
+	@echo "                    (alias: make tests)"
 	@echo "  make plan-test        $(PLAN_TEST)   → PLAN TEST PASSED"
 	@echo "  make rope-test        $(ROPE_TEST)   → ROPE TEST PASSED"
 	@echo "  make flags-test       $(FLAGS_TEST)   → FLAGS TEST PASSED"
+	@echo "  make device-gate-test $(DEVICE_GATE_TEST) → DEVICE GATE TEST PASSED"
 	@echo "  make engine-smoke     $(ENGINE_SMOKE)   → ENGINE SMOKE PASSED"
 	@echo "  make engine-features  $(ENG_FEATURES)   → ENGINE FEATURES PASSED"
 	@echo "  make golden           $(GOLDEN_BIN)  → PAR GOLDEN WRITTEN"

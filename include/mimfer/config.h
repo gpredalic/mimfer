@@ -6,8 +6,11 @@
  * startup and a mismatch is a hard error (MM_ERR_DEVICE / MM_ERR_SHAPE).
  * Device profile: nominal datasheet numbers for the RTX PRO 4000 Blackwell.
  * At startup mm_device_probe() reads cudaDeviceProp and compares field by
- * field; bandwidth is derived (memClock x busWidth x 2), must be within 10%
- * of nominal. See docs/architecture.md.
+ * field: VRAM must be at most MM_VRAM_TOLERANCE_PCT below nominal (the
+ * driver-reported total sits below the datasheet nominal — the
+ * driver/firmware reserves part of the card; the PRO 4000 24 GB reports
+ * 23.4256 GiB, measured 2026-09-27), and bandwidth (derived memClock x
+ * busWidth x 2) must be within 10% of nominal. See docs/architecture.md.
  */
 
 #ifdef __cplusplus
@@ -20,6 +23,14 @@ extern "C" {
 #include "mimfer.h"
 
 /* ------------------------------------------------------ device profile */
+
+/* The driver-reported totalGlobalMem is below the datasheet nominal
+ * (driver/firmware reserve). The device gate (mm_device_check) accepts up
+ * to this percentage below the nominal vram_bytes; the floor is
+ * inclusive. Measured anchor: the RTX PRO 4000 24 GB reports
+ * 25,153,044,480 bytes = 23.4256 GiB (2.39% below nominal, driver
+ * 595.71.05, 2026-09-27). */
+#define MM_VRAM_TOLERANCE_PCT 5
 
 typedef struct mm_dev_profile {
     const char *name;        /* device name substring to match             */

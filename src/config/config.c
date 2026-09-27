@@ -111,10 +111,21 @@ mm_status mm_device_check(const mm_dev_info *d, const mm_dev_profile *p)
                 d->cc_major, d->cc_minor, p->cc_major, p->cc_minor);
         return MM_ERR_DEVICE;
     }
-    if (d->vram_bytes < p->vram_bytes) {
-        MM_LOGE("device gate: %zu GiB < required %zu GiB",
-                d->vram_bytes >> 30, p->vram_bytes >> 30);
-        return MM_ERR_DEVICE;
+    /* VRAM: the driver-reported totalGlobalMem sits below the datasheet
+     * nominal — the driver/firmware reserves part of the card (RTX PRO
+     * 4000 24 GB: the driver reports 25,153,044,480 bytes = 23.4256 GiB,
+     * 2.39% below nominal; measured 2026-09-27, driver 595.71.05).
+     * Accept up to MM_VRAM_TOLERANCE_PCT below nominal (floor inclusive). */
+    {
+        size_t vram_floor =
+            p->vram_bytes * (100 - MM_VRAM_TOLERANCE_PCT) / 100;
+        if (d->vram_bytes < vram_floor) {
+            MM_LOGE("device gate: %zu GiB < required %zu GiB "
+                    "(%d%% tolerance, floor %zu GiB)",
+                    d->vram_bytes >> 30, p->vram_bytes >> 30,
+                    MM_VRAM_TOLERANCE_PCT, vram_floor >> 30);
+            return MM_ERR_DEVICE;
+        }
     }
     /* Bandwidth within 10% of nominal (derived value is a product of the
      * two driver-reported fields, so this mainly guards a wrong card). */
