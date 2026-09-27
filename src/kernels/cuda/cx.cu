@@ -432,8 +432,10 @@ mm_status kx_op_rope(const mm_kcall *kc)
 
 /* Store k/v rows for toks [a..a+M) into the paged pool. Single-slot
  * reference: slot 0's block table (the CPU reference's scope), block id
- * for position pos is tab[pos/64]; layout [kv_head][block][tok][hd].
- * One thread per (token, kv head), 8 bf16 per iteration. */
+ * for position pos is tab[pos/64] (ids run 1..n_blocks, id 0 = "no
+ * block"); the pool is indexed 0..n_blocks-1, so the id is converted
+ * before the offset math. Layout [kv_head][block][tok][hd]. One thread
+ * per (token, kv head), 8 bf16 per iteration. */
 __global__ void k_kvstore(const mm_ctrl *c, const uint16_t *k,
                           const uint16_t *v, uint16_t *kb, uint16_t *vb,
                           const uint32_t *tab, uint32_t M, uint32_t hd,
@@ -444,7 +446,8 @@ __global__ void k_kvstore(const mm_ctrl *c, const uint16_t *k,
     if (m >= M)
         return;
     uint32_t pos = c->n_slots ? c->slot_pos[m] : c->pos0 + m;
-    uint32_t blk = tab[pos / MM_KV_BLOCK_TOK];
+    uint32_t bid = tab[pos / MM_KV_BLOCK_TOK];
+    uint32_t blk = bid ? bid - 1 : 0;   /* 1-based id -> 0-based index */
     size_t off = (size_t)h * (head_stride / 2)
                + (size_t)blk * (block_stride / 2)
                + (pos % MM_KV_BLOCK_TOK) * (tok_stride / 2);
@@ -489,7 +492,8 @@ mm_status kx_op_kvstore(const mm_kcall *kc)
 /* ------------------------------------------------------------- ATT ops */
 
 /* One paged KV row (head_dim bf16): slot 0's block table, the CPU
- * reference's kv_row() offset math in bf16 units. */
+ * reference's kv_row() offset math in bf16 units. Block ids run
+ * 1..n_blocks (id 0 == "no block"); the pool is indexed 0..n_blocks-1. */
 static __device__ inline const uint16_t *kv_row_dev(const uint16_t *base,
                                                     const uint32_t *tab,
                                                     uint32_t kh, uint32_t t,
@@ -497,7 +501,8 @@ static __device__ inline const uint16_t *kv_row_dev(const uint16_t *base,
                                                     size_t block_stride,
                                                     size_t tok_stride)
 {
-    uint32_t blk = tab[t / MM_KV_BLOCK_TOK];
+    uint32_t bid = tab[t / MM_KV_BLOCK_TOK];
+    uint32_t blk = bid ? bid - 1 : 0;   /* 1-based id -> 0-based index */
     size_t off = (size_t)kh * (head_stride / 2)
                + (size_t)blk * (block_stride / 2)
                + (t % MM_KV_BLOCK_TOK) * (tok_stride / 2);

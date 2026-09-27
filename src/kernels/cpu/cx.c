@@ -39,7 +39,10 @@ static uint32_t ctrl_pos(const mm_ctrl *c, uint32_t i)
 static const uint16_t *kv_row(const mm_kvpool *kv, uint32_t head,
                               const void *base, uint32_t pos)
 {
-    uint32_t blk = kv->blk_tab_host[pos / MM_KV_BLOCK_TOK];   /* slot 0 */
+    /* Block ids run 1..n_blocks (id 0 == "no block"); the pool is indexed
+     * 0..n_blocks-1, so convert the id to a block index. */
+    uint32_t bid = kv->blk_tab_host[pos / MM_KV_BLOCK_TOK];   /* slot 0 */
+    uint32_t blk = bid ? bid - 1 : 0;
     size_t off = head * (kv->head_stride / 2)
                + (size_t)blk * (kv->block_stride / 2)
                + (pos % MM_KV_BLOCK_TOK) * (kv->tok_stride / 2);
@@ -219,7 +222,8 @@ mm_status kx_op_gemm_f4(const mm_kcall *kc)
  * [kv_head][block][tok_in_block][head_dim] layout. */
 static uint16_t *kv_row_w(mm_kvpool *kv, uint32_t head, void *base, uint32_t pos)
 {
-    uint32_t blk = kv->blk_tab_host[pos / MM_KV_BLOCK_TOK];   /* slot 0 */
+    uint32_t bid = kv->blk_tab_host[pos / MM_KV_BLOCK_TOK];   /* slot 0 */
+    uint32_t blk = bid ? bid - 1 : 0;   /* 1-based id -> 0-based index */
     size_t off = head * (kv->head_stride / 2)
              + (size_t)blk * (kv->block_stride / 2)
              + (pos % MM_KV_BLOCK_TOK) * (kv->tok_stride / 2);
