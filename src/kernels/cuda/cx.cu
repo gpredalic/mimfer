@@ -790,17 +790,27 @@ mm_status kx_op_conv4(const mm_kcall *kc)
  * v-head; the m loop is SEQUENTIAL per head and each head's operation
  * order (state update then output, per m) is the reference's per-head
  * order exactly — heads are independent, so nothing is reordered.
- * q/k are shared across the v heads that map to one k head (GQA). */
+ * q/k are shared across the v heads that map to one k head (GQA).
+ *
+ * The decay constant is HOST-SUPPLIED, not computed in-kernel: the
+ * device expf differs from the host libm expf by 1 f32 ulp (the same
+ * documented libm gap as the ROPE sinf/cosf, covered by the 1-bf16-ulp
+ * gate for per-element calls). But decay is a CONSTANT multiplied into
+ * every recurrence step — a 1-ulp constant drift compounds over the
+ * round sequence and breaks the class-2 4-f32-ulp gate on the f32 state
+ * (measured 5..256 ulp on 2026-09-27). The launcher computes
+ * expf(-0.1f) with the same glibc call as the CPU reference
+ * (kx_lin_run), so the recurrence is bit-identical on both paths. */
 __global__ void k_lin(float *st, const uint16_t *qkv, uint16_t *o,
                       uint32_t M, uint32_t kdim, uint32_t vd,
                       uint32_t vheads, uint32_t kq, uint32_t vdim,
-                      uint32_t ch, uint32_t in_dim, uint32_t kvh)
+                      uint32_t ch, uint32_t in_dim, uint32_t kvh,
+                      float decay)
 {
     uint32_t h = blockIdx.x;
     if (h >= vheads)
         return;
     uint32_t kh = h / kvh;
-    float decay = expf(-0.1f);
     float *S = st + (size_t)h * kdim * vd;
     for (uint32_t m = 0; m < M; m++) {
         const uint16_t *row = qkv + (size_t)m * in_dim;
@@ -837,6 +847,10 @@ static mm_status kx_lin_launch(const mm_kcall *kc)
     const uint32_t ch = 2u * kq + vdim;
     const uint32_t in_dim = ch + 2u * mc->lin_v_heads;
     const uint32_t kvh = mc->lin_v_heads / mc->lin_k_heads;
+    /* Host glibc expf — the same call the CPU reference (kx_lin_run)
+     * makes, so the recurrence constant is bit-identical on both paths
+     * (the device expf is 1 ulp off; see the k_lin note). */
+    const float decay = expf(-0.1f);
     dim3 grid(mc->lin_v_heads);
     dim3 block(1);
 
@@ -846,7 +860,7 @@ static mm_status kx_lin_launch(const mm_kcall *kc)
                                        (const uint16_t *)op->b,
                                        (uint16_t *)op->c,
                                        M, kdim, vd, mc->lin_v_heads, kq,
-                                       vdim, ch, in_dim, kvh);
+                                       vdim, ch, in_dim, kvh, decay);
     return kx_sync();
 }
 
